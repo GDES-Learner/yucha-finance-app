@@ -274,6 +274,8 @@ const Store = {
   save() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(this.data));
+      // 登录云同步后，本地变更自动上传（cloud.js；未启用时为空操作）
+      if (typeof scheduleAutoPush === 'function') scheduleAutoPush();
       return true;
     } catch (e) {
       console.error('保存失败', e);
@@ -1486,6 +1488,9 @@ function init() {
   switchPage('ledger');
   renderLedger();
   refreshIcons(document.body);
+
+  // 云同步（独立模块，SDK 缺失时静默跳过，App 仍以纯本地模式运行）
+  if (typeof initCloudSync === 'function') initCloudSync();
 }
 
 document.addEventListener('DOMContentLoaded', init);

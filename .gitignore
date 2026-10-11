@@ -12,3 +12,6 @@ desktop.ini
 node_modules/
 *.log
 *.tmp
+
+# WorkBuddy 应用标记文件（本地生成，无需版本管理）
+.wbapp_*.genie

@@ -1203,3 +1203,45 @@ select.f-category.fallback-native {
   .msum-col-x { font-size: 10px; }
   .msum-col-val { display: none; }
 }
+
+/* =========================================================================
+   22. 云同步
+   ========================================================================= */
+.sync-item { margin-top: 6px; }
+.sync-item .icon { color: var(--ink-400); }
+.sync-item.on { color: var(--brand-700); }
+.sync-item.on .nav-icon .icon { color: var(--brand-500); }
+
+.sync-badge {
+  font-size: var(--fs-micro); font-weight: 620;
+  padding: 3px 9px; border-radius: 999px;
+  background: var(--surface-2); color: var(--ink-400);
+  border: 1px solid var(--ink-50);
+}
+.sync-badge.on {
+  background: var(--brand-50, #e6f5ef); color: var(--brand-700);
+  border-color: rgba(23,160,115,.22);
+}
+
+#cloudSyncCard { margin-top: var(--sp-4); }
+.sync-body { padding: var(--sp-1) 0 var(--sp-2); }
+.sync-desc {
+  font-size: var(--fs-sm); color: var(--ink-500); line-height: 1.65; margin: 0 0 var(--sp-3);
+}
+.sync-desc .icon { width: 15px; height: 15px; vertical-align: -2px; color: var(--brand-500); }
+.sync-desc b { color: var(--ink-800); font-weight: 640; }
+.sync-sub { color: var(--ink-400); font-size: var(--fs-xs); }
+.sync-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.sync-actions .btn { flex: none; }
+
+/* 验证码行 */
+.otp-row { display: flex; gap: var(--sp-2); align-items: stretch; }
+.otp-row .input { flex: 1; min-width: 0; }
+.otp-send { white-space: nowrap; flex: none; }
+.otp-send:disabled { opacity: .55; cursor: not-allowed; }
+
+.field-hint {
+  min-height: 16px; margin-top: 5px;
+  font-size: var(--fs-xs); color: var(--ink-400);
+}
+.field-hint.err { color: var(--danger); }

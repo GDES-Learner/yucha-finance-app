@@ -37,6 +37,12 @@
           <span class="nav-icon"><i data-lucide="plus"></i></span>
           <span class="nav-text">添加功能</span>
         </button>
+
+        <!-- 云同步：登录状态 / 入口 -->
+        <button class="nav-item sync-item" id="syncBtn" type="button">
+          <span class="nav-icon" id="syncIconWrap"><i data-lucide="cloud-off"></i></span>
+          <span class="nav-text" id="syncText">开启云同步</span>
+        </button>
       </div>
     </aside>
 
@@ -261,6 +267,22 @@
           <div class="total-note" id="storageNote"><i data-lucide="shield-check"></i>数据已保存在本机浏览器</div>
         </div>
 
+        <!-- 云同步 -->
+        <div class="card" id="cloudSyncCard">
+          <div class="list-head">
+            <h2><i data-lucide="cloud"></i>云同步</h2>
+            <span class="sync-badge" id="cloudSyncBadge">未登录</span>
+          </div>
+          <div class="sync-body" id="cloudSyncBody">
+            <p class="sync-desc">登录后，账本会自动保存到云端，手机和电脑用同一个账号即可看到相同数据。</p>
+            <div class="sync-actions">
+              <button class="btn btn-primary" id="cloudLoginBtn" type="button">
+                <i data-lucide="log-in"></i>登录 / 注册
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="vault-grid" id="vaultGrid"></div>
 
         <div class="card">
@@ -287,6 +309,8 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="vendor/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js"></script>
   <script src="app.js"></script>
+  <script src="cloud.js"></script>
 </body>
 </html>
