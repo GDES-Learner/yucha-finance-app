@@ -34,7 +34,8 @@ function boot() {
     '(function(){\n' + appJs + '\n' +
     'window.__app = { Store, state, CATEGORIES, CATEGORY_ICON, CATEGORY_COLOR, ACCOUNTS, ' +
     'normalizeCategory, renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr, ' +
-    'renderMonthlySummary, monthTotals, monthCategoryTotals, addMonths };\n' +
+    'renderMonthlySummary, monthTotals, monthCategoryTotals, addMonths, ' +
+    'applyAppName, openRenameModal, DEFAULT_APP_NAME };\n' +
     '})();';
   window.eval(instrumented);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
@@ -660,6 +661,58 @@ test('需求9 点击月份按钮切换明细', (w) => {
   const janCol = w.document.querySelector('#msumChart .msum-col[data-month="2026-01"]');
   click(w, janCol);
   ok(state.summaryMonth === '2026-01', '点击对比图列也能切换月份');
+});
+
+/* ---------- 需求 10：应用名称可随时修改 ---------- */
+test('需求10 左上角应用名称可修改并持久化', (w) => {
+  const { Store } = w.__app;
+
+  // 默认名称
+  const brand = w.document.querySelector('#brandName');
+  ok(!!brand, '左上角品牌名元素存在');
+  ok(brand.textContent === w.__app.DEFAULT_APP_NAME, `默认名称为「${w.__app.DEFAULT_APP_NAME}」`);
+  ok(w.document.title === w.__app.DEFAULT_APP_NAME, '页面标题与名称一致');
+
+  // 点击品牌名 → 弹出改名弹窗
+  click(w, brand);
+  const input = w.document.querySelector('#appNameInput');
+  ok(!!input, '点击品牌名后弹出改名输入框');
+
+  // 输入新名并保存
+  setVal(w, input, '我的小账本');
+  click(w, w.document.querySelector('#modalOk'));
+  ok(Store.data.appName === '我的小账本', 'Store.data.appName 已更新');
+  ok(brand.textContent === '我的小账本', '左上角文案已更新');
+  ok(w.document.title === '我的小账本', '页面标题已同步');
+
+  // 持久化：写入 localStorage
+  const saved = JSON.parse(w.eval('localStorage.getItem("life_assistant_v1")'));
+  ok(saved.appName === '我的小账本', '已持久化到 localStorage');
+
+  // 首尾空白会被裁剪
+  w.__app.applyAppName('  测试名  ');
+  ok(w.document.querySelector('#brandName').textContent === '测试名', '首尾空白被裁剪');
+
+  // 空名称兜底：不允许保存为空（沿用 store 中当前名称）
+  const nameBefore = Store.data.appName;
+  click(w, w.document.querySelector('#brandName'));
+  const input2 = w.document.querySelector('#appNameInput');
+  setVal(w, input2, '   ');
+  click(w, w.document.querySelector('#modalOk'));
+  ok(Store.data.appName === nameBefore, `空名称被拒绝，保留原值「${nameBefore}」`);
+
+  // sanitize 对残缺数据的兜底
+  Store.data.appName = '';
+  Store.sanitize();
+  ok(Store.data.appName === w.__app.DEFAULT_APP_NAME, 'sanitize 将空名称回落到默认名');
+  Store.data.appName = 12345;
+  Store.sanitize();
+  ok(Store.data.appName === w.__app.DEFAULT_APP_NAME, 'sanitize 将非字符串名称回落到默认名');
+
+  // 超长名称被截断
+  Store.data.appName = '一二三四五六七八九十一二三四五六七八九十甲乙丙丁';
+  Store.sanitize();
+  ok(Store.data.appName.length === 20, `超长名称被截断为 20 字符（当前 ${Store.data.appName.length}）`);
 });
 
 /* =========================================================================

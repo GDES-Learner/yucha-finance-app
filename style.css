@@ -101,7 +101,7 @@
   --dur-base: 220ms;
   --dur-slow: 380ms;
 
-  --sidebar-w: 232px;
+  --sidebar-w: 260px;
 }
 
 /* ===================== 2. 基础重置 ===================== */
@@ -209,7 +209,28 @@ svg { display: block; }
   color: #fff;
 }
 .brand-logo .icon { color: #fff; width: 19px; height: 19px; stroke-width: 2; }
-.brand-name { font-size: 15px; font-weight: 650; letter-spacing: .1px; color: var(--ink-900); }
+
+/* 应用名称：可点击编辑（悬停高亮即提示，无需额外图标） */
+.brand-name {
+  font-size: 15px; font-weight: 650; letter-spacing: .1px; color: var(--ink-900);
+  max-width: 178px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 3px 6px; margin: 0 -2px;
+  border-radius: 7px; border: 1.5px solid transparent;
+  background: none; text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+.brand-name:hover {
+  background: var(--surface-2);
+  border-color: rgba(16, 40, 30, .10);
+  color: var(--brand-700);
+}
+.brand-name:focus-visible {
+  outline: none;
+  border-color: var(--brand-400);
+  box-shadow: 0 0 0 4px rgba(23, 160, 115, .12);
+}
 
 .nav { display: flex; flex-direction: column; gap: 3px; flex: 1; }
 .nav-label {
@@ -989,7 +1010,7 @@ select.f-category.fallback-native {
     position: sticky; top: 0; z-index: 30;
   }
   .brand { padding: 0 var(--sp-3) 0 0; gap: 8px; }
-  .brand-name { font-size: 14px; }
+  .brand-name { font-size: 14px; max-width: 120px; }
   .nav { flex-direction: row; flex: 1; gap: 4px; overflow-x: auto; }
   .nav-label { display: none; }
   .nav-item { padding: 8px 11px; justify-content: center; }

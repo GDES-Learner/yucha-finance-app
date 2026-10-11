@@ -10,6 +10,10 @@
 const STORE_KEY = 'life_assistant_v1';
 const DATA_VERSION = 3;
 const DEFAULT_LIMIT = 1500;
+/** 左上角应用名称的默认值（用户可在界面随时修改，覆盖后存于 data.appName） */
+const DEFAULT_APP_NAME = '鱼叉的专属app';
+/** 应用名称最大长度（字符） */
+const APP_NAME_MAX = 20;
 
 /* 分类：吃饭 / 奶茶 / 宵夜（原「餐饮」拆分）+ 宿舍 + 交通 / 购物 / 娱乐 / 其它 */
 const CATEGORIES = ['吃饭', '奶茶', '宵夜', '宿舍', '交通', '购物', '娱乐', '其它'];
@@ -246,11 +250,19 @@ const Store = {
     });
 
     if (!Array.isArray(this.data.customNav)) this.data.customNav = [];
+
+    // 应用名称兜底：缺失 / 非字符串 / 空串 → 回落到默认名
+    if (typeof this.data.appName !== 'string' || !this.data.appName.trim()) {
+      this.data.appName = DEFAULT_APP_NAME;
+    } else {
+      this.data.appName = this.data.appName.trim().slice(0, APP_NAME_MAX);
+    }
   },
 
   reset() {
     this.data = {
       version: DATA_VERSION,
+      appName: DEFAULT_APP_NAME,      // 左上角应用名称（可修改）
       transactions: [],
       budgets: {},                    // { "YYYY-MM": limit }
       vault: { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 },
@@ -1373,6 +1385,52 @@ $('#vaultGrid').addEventListener('click', (e) => {
 });
 
 /* =========================================================================
+   应用名称（左上角可随时修改）
+   ========================================================================= */
+/** 把已保存（或指定的）名称应用到界面与页面标题 */
+function applyAppName(name) {
+  const n = (name || Store.data.appName || DEFAULT_APP_NAME).trim().slice(0, APP_NAME_MAX) || DEFAULT_APP_NAME;
+  const el = $('#brandName');
+  if (el) el.textContent = n;
+  document.title = n;
+}
+
+/** 打开改名弹窗 */
+function openRenameModal() {
+  const cur = Store.data.appName || DEFAULT_APP_NAME;
+  openModal(`
+    <h3>${icon('pencil')}修改应用名称</h3>
+    <p>给这个 App 起个只属于你的名字，会显示在左上角与浏览器标签页。</p>
+    <div class="form-field">
+      <input class="input" id="appNameInput" type="text" maxlength="${APP_NAME_MAX}"
+        value="${escapeHtml(cur)}" placeholder="例如：鱼叉的专属app" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-primary" id="modalOk">保存</button>
+    </div>
+  `);
+  const input = $('#appNameInput');
+  input.focus();
+  input.select();
+
+  const save = () => {
+    const v = input.value.trim();
+    if (!v) { toast('名称不能为空', 'err'); input.focus(); return; }
+    Store.data.appName = v.slice(0, APP_NAME_MAX);
+    Store.save();
+    applyAppName(Store.data.appName);
+    closeModal();
+    toast('应用名称已更新');
+  };
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', save);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+}
+
+$('#brandName').addEventListener('click', openRenameModal);
+
+/* =========================================================================
    添加功能（预留扩展位）
    ========================================================================= */
 $('#addFuncBtn').addEventListener('click', () => {
@@ -1416,6 +1474,9 @@ function init() {
 
   $('#ledgerMonth').value = state.ledgerMonth;
   $('#statsDate').value = state.statsDate;
+
+  // 应用自定义名称（左上角 + 页面标题）
+  applyAppName();
 
   // 静态图标（侧边栏 / 标题等）
   refreshIcons(document.body);
