@@ -7,7 +7,7 @@
 
 /* ---------------------- 常量 ---------------------- */
 const STORE_KEY = 'life_assistant_v1';
-const DATA_VERSION = 2;
+const DATA_VERSION = 3;
 const DEFAULT_LIMIT = 1500;
 
 /* 分类：吃饭 / 奶茶 / 宵夜（原「餐饮」拆分）+ 宿舍 + 交通 / 购物 / 娱乐 / 其它 */
@@ -33,9 +33,18 @@ function normalizeCategory(cat) {
   return CATEGORY_ALIAS[cat] || cat;
 }
 
-/* 账户顺序：微信 → 支付宝 → 银行（微信为默认付款方式） */
+/* 账户顺序：微信 → 支付宝 → 银行（微信为默认付款方式）
+   account 是交易记录里的扣款账户标识；
+   subAccounts 表示该账户在金库中拆分的子板块（微信 = 零钱 / 零钱通）。
+   记账扣款与交易归属统一走 account 主键，微信内部默认从「零钱」出账。 */
 const ACCOUNTS = {
-  wechat: { name: '微信', icon: '💚' },
+  wechat: {
+    name: '微信', icon: '💚',
+    subAccounts: [
+      { key: 'wechat_change', name: '零钱', icon: '💰', isDefault: true },
+      { key: 'wechat_lct', name: '零钱通', icon: '🐖' },
+    ],
+  },
   alipay: { name: '支付宝', icon: '💙' },
   bank: { name: '银行', icon: '🏦' },
 };
@@ -43,10 +52,23 @@ const DEFAULT_ACCOUNT = 'wechat';
 
 const ACCOUNT_COLOR = { wechat: '#22c55e', alipay: '#0ea5e9', bank: '#3b82f6' };
 
+/* 金库余额键：微信拆为 wechat_change（零钱）/ wechat_lct（零钱通），其余账户同名 */
+const VAULT_KEYS = ['wechat_change', 'wechat_lct', 'alipay', 'bank'];
+const VAULT_META = {
+  wechat_change: { name: '零钱', icon: '💰', parent: 'wechat' },
+  wechat_lct: { name: '零钱通', icon: '🐖', parent: 'wechat' },
+  alipay: { name: '支付宝', icon: '💙' },
+  bank: { name: '银行', icon: '🏦' },
+};
+/* 交易里的 account → 金库扣减键（微信默认扣「零钱」） */
+const ACCOUNT_TO_VAULT_KEY = { wechat: 'wechat_change', alipay: 'alipay', bank: 'bank' };
+function vaultKeyOf(account) {
+  return ACCOUNT_TO_VAULT_KEY[account] || account;
+}
+
 /* ---------------------- 工具函数 ---------------------- */
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -109,17 +131,31 @@ const Store = {
     return this.data;
   },
 
-  /** 数据版本迁移：v1 → v2（餐饮 → 吃饭；账户键顺序调整不影响数据） */
+  /** 数据版本迁移：v1→v2（餐饮→吃饭）；v2→v3（微信拆为零钱/零钱通） */
   migrate() {
     const v = Number(this.data.version || 1);
+
     if (v < 2) {
       (this.data.transactions || []).forEach((t) => {
         if (t && t.category) t.category = normalizeCategory(t.category);
       });
-      this.data.version = DATA_VERSION;
-      this.save();
     }
+
+    if (v < 3) {
+      // 旧版 vault.wechat 余额整体迁入「零钱」，零钱通从 0 开始
+      const old = this.data.vault || {};
+      const legacyWechat = numOr(old.wechat, 0);
+      this.data.vault = {
+        wechat_change: legacyWechat,
+        wechat_lct: numOr(old.wechat_lct, 0),
+        alipay: numOr(old.alipay, 0),
+        bank: numOr(old.bank, 0),
+      };
+      // 交易记录里的 account 保持 'wechat' 不变（默认扣零钱）
+    }
+
     this.data.version = DATA_VERSION;
+    this.save();
   },
 
   /** 结构校验与兜底：确保关键字段存在且类型正确 */
@@ -128,10 +164,13 @@ const Store = {
     if (!this.data.budgets || typeof this.data.budgets !== 'object') this.data.budgets = {};
     if (!this.data.vault || typeof this.data.vault !== 'object') this.data.vault = {};
 
+    // 金库键标准化（兼容任何残缺结构）
+    const v = this.data.vault;
     this.data.vault = {
-      wechat: numOr(this.data.vault.wechat, 0),
-      alipay: numOr(this.data.vault.alipay, 0),
-      bank: numOr(this.data.vault.bank, 0),
+      wechat_change: numOr(v.wechat_change, numOr(v.wechat, 0)),
+      wechat_lct: numOr(v.wechat_lct, 0),
+      alipay: numOr(v.alipay, 0),
+      bank: numOr(v.bank, 0),
     };
 
     // 过滤非法交易记录，并补齐缺失字段
@@ -142,7 +181,7 @@ const Store = {
       if (t.type !== 'expense' && t.type !== 'income') return false;
       if (!t.date || typeof t.date !== 'string') return false;
       t.amount = round2(amt);
-      t.account = this.data.vault.hasOwnProperty(t.account) ? t.account : DEFAULT_ACCOUNT;
+      t.account = ACCOUNTS.hasOwnProperty(t.account) ? t.account : DEFAULT_ACCOUNT;
       t.category = t.type === 'expense' ? normalizeCategory(t.category || '其它') : '';
       t.remark = typeof t.remark === 'string' ? t.remark : '';
       t.createdAt = Number(t.createdAt) || Date.parse(t.date) || Date.now();
@@ -158,7 +197,7 @@ const Store = {
       version: DATA_VERSION,
       transactions: [],
       budgets: {},                    // { "YYYY-MM": limit }
-      vault: { wechat: 0, alipay: 0, bank: 0 },
+      vault: { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 },
       customNav: [],                  // 预留扩展功能
     };
     this.save();
@@ -210,15 +249,26 @@ const Store = {
 
   /* --- 金库 --- */
   getVault() { return this.data.vault; },
-  adjustVault(account, delta) {
-    if (!Object.prototype.hasOwnProperty.call(this.data.vault, account)) return;
+
+  /** 调整金库余额。key 可以是「金库键」（wechat_change / wechat_lct / alipay / bank），
+   *  也可以是交易账户键（wechat → 默认落到零钱）。 */
+  adjustVault(key, delta) {
+    const vaultKey = vaultKeyOf(key);
+    if (!Object.prototype.hasOwnProperty.call(this.data.vault, vaultKey)) return;
     const d = numOr(delta, 0);
-    this.data.vault[account] = round2(this.data.vault[account] + d);
+    this.data.vault[vaultKey] = round2(this.data.vault[vaultKey] + d);
     this.save();
   },
+
+  /** 微信账户余额 = 零钱 + 零钱通 */
+  wechatTotal() {
+    const v = this.data.vault;
+    return round2(v.wechat_change + v.wechat_lct);
+  },
+
   totalAssets() {
     const v = this.data.vault;
-    return round2(v.bank + v.alipay + v.wechat);
+    return round2(v.wechat_change + v.wechat_lct + v.alipay + v.bank);
   },
 };
 
@@ -675,6 +725,33 @@ function renderVault() {
   renderStorageNote();
 
   $('#vaultGrid').innerHTML = Object.entries(ACCOUNTS).map(([key, info]) => {
+    // 微信：拆成「零钱 / 零钱通」两个子板块
+    if (Array.isArray(info.subAccounts) && info.subAccounts.length) {
+      const total = info.subAccounts.reduce((s, sub) => s + (v[sub.key] || 0), 0);
+      const subCards = info.subAccounts.map((sub) => {
+        const bal = v[sub.key] || 0;
+        return `
+          <div class="vault-sub">
+            <div class="vault-sub-head">
+              <span class="vault-sub-icon">${sub.icon}</span>
+              <span class="vault-sub-name">${sub.name}</span>
+            </div>
+            <div class="vault-sub-amount ${bal < 0 ? 'neg' : ''}">${money(bal)}</div>
+            <button class="btn-mini" data-vault-act="set" data-acc="${sub.key}">改余额</button>
+          </div>`;
+      }).join('');
+      return `
+        <div class="vault-card vault-card-split">
+          <div class="vault-head">
+            <span class="vault-icon">${info.icon}</span>
+            <span class="vault-name">${info.name}</span>
+            <span class="vault-total ${total < 0 ? 'neg' : ''}">${money(total)}</span>
+          </div>
+          <div class="vault-subs">${subCards}</div>
+        </div>`;
+    }
+
+    // 普通账户
     const bal = v[key] || 0;
     return `
       <div class="vault-card">
@@ -787,12 +864,12 @@ $('#importBtn').addEventListener('click', importData);
 $('#vaultGrid').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-vault-act="set"]');
   if (!btn) return;
-  const key = btn.dataset.acc;
-  const info = ACCOUNTS[key];
+  const key = btn.dataset.acc;                 // 金库键：wechat_change / wechat_lct / alipay / bank
+  const info = VAULT_META[key] || { name: key };
   const cur = Store.getVault()[key] || 0;
   openModal(`
     <h3>调整「${info.name}」余额</h3>
-    <p>直接设置该账户当前余额（允许为负数）</p>
+    <p>直接设置该板块当前余额（允许为负数）</p>
     <div class="form-row">
       <label>余额</label>
       <input type="number" id="vaultInput" step="0.01" value="${cur}" />
@@ -808,6 +885,7 @@ $('#vaultGrid').addEventListener('click', (e) => {
   $('#modalOk').addEventListener('click', () => {
     const nv = parseFloat($('#vaultInput').value);
     if (isNaN(nv)) { toast('请输入有效数值'); return; }
+    if (!Object.prototype.hasOwnProperty.call(Store.data.vault, key)) return;
     Store.data.vault[key] = round2(nv);
     Store.save();
     closeModal();

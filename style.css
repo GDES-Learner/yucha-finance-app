@@ -312,9 +312,42 @@ ul { list-style: none; }
 .vault-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
 .vault-icon { font-size: 20px; }
 .vault-name { font-weight: 600; font-size: 14px; }
+.vault-total {
+  margin-left: auto; font-size: 15px; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: var(--text-2);
+}
+.vault-total.neg { color: var(--danger); }
 .vault-amount { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .vault-amount.neg { color: var(--danger); }
 .vault-actions { margin-top: 14px; display: flex; gap: 8px; }
+
+/* 微信：零钱 / 零钱通 双子板块 */
+.vault-card-split { grid-column: span 1; }
+.vault-subs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.vault-sub {
+  background: #f8fafb;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color .15s, background .15s;
+}
+.vault-sub:hover { border-color: #d7e2e6; background: #fff; }
+.vault-sub-head { display: flex; align-items: center; gap: 6px; }
+.vault-sub-icon { font-size: 15px; }
+.vault-sub-name { font-size: 12.5px; color: var(--text-2); font-weight: 500; }
+.vault-sub-amount {
+  font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums;
+  letter-spacing: -.3px;
+}
+.vault-sub-amount.neg { color: var(--danger); }
+.vault-sub .btn-mini { align-self: flex-start; }
 
 /* ===================== 弹窗 ===================== */
 .modal-mask {

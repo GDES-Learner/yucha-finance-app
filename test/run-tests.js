@@ -139,13 +139,14 @@ test('需求4 账户顺序 微信→支付宝→银行，默认微信', (w) => {
 
   // 实际提交一笔，验证默认扣微信
   w.__app.Store.data.transactions = [];
-  w.__app.Store.data.vault = { bank: 0, alipay: 0, wechat: 0 };
+  w.__app.Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
   const form = w.document.querySelector('#page-ledger form.entry-form');
   form.querySelector('.f-amount').value = '11';
   submit(w, form);
   const txs = w.__app.Store.data.transactions;
   ok(txs.length === 1 && txs[0].account === 'wechat', '默认记账扣款账户为微信');
-  ok(w.__app.Store.data.vault.wechat === -11, '微信账户余额相应扣减');
+  ok(w.__app.Store.data.vault.wechat_change === -11, '微信默认从「零钱」扣减（零钱 -11）');
+  ok(w.__app.Store.data.vault.wechat_lct === 0, '「零钱通」余额不受影响');
 });
 
 /* ---------- 需求 5：剩余每日平均花费上限 ---------- */
@@ -186,7 +187,7 @@ test('需求6 数据持久化到 localStorage', (w) => {
   const { Store } = w.__app;
   const ds = w.__app.todayStr();
   Store.data.transactions = [];
-  Store.data.vault = { bank: 0, alipay: 0, wechat: 0 };
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
   Store.addTransaction({ id: 'persist1', type: 'expense', amount: 66, category: '奶茶', account: 'wechat', remark: '测试持久化', date: ds, createdAt: Date.now() });
   Store.adjustVault('wechat', -66);
 
@@ -202,7 +203,7 @@ test('需求6 数据持久化到 localStorage', (w) => {
   dom2.window.document.dispatchEvent(new dom2.window.Event('DOMContentLoaded', { bubbles: true }));
   const reloaded = JSON.stringify(dom2.window.__app.Store.data.transactions);
   ok(reloaded.includes('persist1'), '重新打开后数据仍存在（未丢失）');
-  ok(dom2.window.__app.Store.data.vault.wechat === -66, '金库余额也一并持久化');
+  ok(dom2.window.__app.Store.data.vault.wechat_change === -66, '金库余额也一并持久化（零钱）');
 
   // 最近账单列表能渲染出该记录
   const listHtml = dom2.window.document.querySelector('#billList').innerHTML;
@@ -214,15 +215,19 @@ test('需求6 数据持久化到 localStorage', (w) => {
   // 旧版本数据（餐饮 + 旧 vault）自动迁移
   const legacy = JSON.stringify({
     transactions: [{ id: 'old1', type: 'expense', amount: 30, category: '餐饮', account: 'wechat', remark: '', date: ds, createdAt: 1 }],
-    budgets: {}, vault: { bank: 0, alipay: 0, wechat: 0 },
+    budgets: {}, vault: { bank: 0, alipay: 0, wechat: 128.5 },
   });
   const dom3 = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
   dom3.window.localStorage.setItem('life_assistant_v1', legacy);
   dom3.window.eval('(function(){' + fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8') + 'window.__app={Store};})();');
   dom3.window.document.dispatchEvent(new dom3.window.Event('DOMContentLoaded', { bubbles: true }));
   const migratedTx = dom3.window.__app.Store.data.transactions[0];
+  const migratedVault = dom3.window.__app.Store.data.vault;
   ok(migratedTx.category === '吃饭', '旧「餐饮」数据迁移为「吃饭」');
-  ok(!('bank' in dom3.window.__app.Store.data.vault) === false, '旧 vault 结构被规范化为三账户');
+  ok(migratedVault.wechat_change === 128.5, '旧 wechat 余额整体迁入「零钱」');
+  ok(migratedVault.wechat_lct === 0, '「零钱通」初始为 0');
+  ok(!('wechat' in migratedVault), '旧 wechat 键已被移除');
+  ok(dom3.window.__app.Store.data.version === 3, '数据版本升级为 3');
 
   // 损坏数据（非法 JSON）不应导致崩溃，且会备份原始串
   const dom4 = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
@@ -253,6 +258,79 @@ test('需求6 数据持久化到 localStorage', (w) => {
   ok(dom5.window.__app.Store.data.transactions.length === 1, '非法记录被过滤，仅保留有效记录');
   ok(!!dom5.window.__app.Store.data.vault.alipay === true ||
      dom5.window.__app.Store.data.vault.alipay === 0, '缺失账户被补全为 0');
+});
+
+/* ---------- 需求 7：微信拆分零钱 / 零钱通 ---------- */
+test('需求7 金库微信拆分为零钱与零钱通', (w) => {
+  const { Store } = w.__app;
+
+  // 金库页渲染：微信卡片内含两个子板块
+  w.__app.switchPage('vault');
+  w.__app.renderVault();
+
+  const splitCard = w.document.querySelector('.vault-card-split');
+  ok(!!splitCard, '金库页存在「微信」拆分卡片');
+
+  const subNames = Array.from(splitCard.querySelectorAll('.vault-sub-name')).map((e) => e.textContent);
+  ok(subNames.length === 2, `微信卡片下有 2 个子板块（当前 ${subNames.length}）`);
+  ok(subNames[0] === '零钱' && subNames[1] === '零钱通', `子板块为 零钱/零钱通（${subNames.join('/')}）`);
+
+  // 两个子板块各有独立「改余额」按钮，指向不同金库键
+  const subBtns = Array.from(splitCard.querySelectorAll('button[data-vault-act="set"]'));
+  const keys = subBtns.map((b) => b.dataset.acc);
+  ok(keys.includes('wechat_change') && keys.includes('wechat_lct'),
+    `零钱/零钱通各自独立（${keys.join(',')}）`);
+
+  // 余额独立：零钱 100 / 零钱通 500
+  Store.data.vault = { wechat_change: 100, wechat_lct: 500, alipay: 0, bank: 0 };
+  Store.save();
+  w.__app.renderVault();
+  const splitCard2 = w.document.querySelector('.vault-card-split');   // 重新查询（DOM 已重建）
+  const amounts = Array.from(splitCard2.querySelectorAll('.vault-sub-amount')).map((e) => e.textContent);
+  ok(amounts[0] === '¥100.00' && amounts[1] === '¥500.00',
+    `两个子板块余额相互独立（${amounts.join(' / ')}）`);
+
+  // 微信卡片头部显示合计 = 零钱 + 零钱通
+  const headTotal = splitCard2.querySelector('.vault-total').textContent;
+  ok(headTotal === '¥600.00', `微信卡片显示合计（${headTotal}）`);
+
+  // 总资产 = 零钱 + 零钱通 + 支付宝 + 银行
+  Store.data.vault = { wechat_change: 100, wechat_lct: 500, alipay: 200, bank: 300 };
+  Store.save();
+  ok(Store.totalAssets() === 1100, `总资产汇总正确（当前 ${Store.totalAssets()}）`);
+  w.__app.renderVault();
+  ok(w.document.querySelector('#totalAssets').textContent === '¥1100.00', '页面总资产显示正确');
+});
+
+test('需求7 记账扣款默认走零钱且不影响零钱通', (w) => {
+  const { Store } = w.__app;
+  Store.data.transactions = [];
+  Store.data.vault = { wechat_change: 200, wechat_lct: 800, alipay: 0, bank: 0 };
+  Store.save();
+
+  w.__app.switchPage('ledger');
+  const form = w.document.querySelector('#page-ledger form.entry-form');
+  // 默认账户应为微信
+  const activeAcc = form.querySelector('.segs-account .seg.active').dataset.account;
+  ok(activeAcc === 'wechat', '记账表单默认付款账户为微信');
+
+  form.querySelector('.f-amount').value = '50';
+  submit(w, form);
+
+  const v = Store.data.vault;
+  ok(v.wechat_change === 150, `扣款从「零钱」扣减（200 → ${v.wechat_change}）`);
+  ok(v.wechat_lct === 800, '「零钱通」完全不受影响');
+
+  // 收入默认入账：微信收入也进零钱
+  const card = form.closest('.card');
+  const incomeTab = Array.from(card.querySelectorAll('.tab')).find((t) => t.dataset.type === 'income');
+  click(w, incomeTab);
+  const accSegs = Array.from(form.querySelectorAll('.segs-account .seg'));
+  click(w, accSegs.find((s) => s.dataset.account === 'wechat'));
+  form.querySelector('.f-amount').value = '30';
+  submit(w, form);
+  ok(Store.data.vault.wechat_change === 180, `微信收入入「零钱」（150 → ${Store.data.vault.wechat_change}）`);
+  ok(Store.data.vault.wechat_lct === 800, '零钱通依旧不受影响');
 });
 
 /* ---------- 回归：整体可用性 ---------- */
@@ -293,7 +371,7 @@ test('回归 改账户金额联动正确', (w) => {
   const { Store } = w.__app;
   const ds = w.__app.todayStr();
   Store.data.transactions = [];
-  Store.data.vault = { wechat: 0, alipay: 100, bank: 50 };
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 100, bank: 50 };
   Store.addTransaction({ id: 'c1', type: 'expense', amount: 40, category: '奶茶', account: 'wechat', remark: '', date: ds, createdAt: Date.now() });
   Store.adjustVault('wechat', -40);   // 微信 -40
   w.__app.switchPage('ledger');
@@ -305,16 +383,17 @@ test('回归 改账户金额联动正确', (w) => {
   Store.adjustVault('alipay', -tx.amount);
   tx.account = 'alipay';
   Store.save();
-  ok(Store.data.vault.wechat === 0, '原账户（微信）金额已加回至 0');
+  ok(Store.data.vault.wechat_change === 0, '原账户（微信零钱）金额已加回至 0');
   ok(Store.data.vault.alipay === 60, '新账户（支付宝）扣除 40 后为 60');
   ok(Store.data.vault.bank === 50, '无关账户（银行）不受影响');
+  ok(Store.data.vault.wechat_lct === 0, '「零钱通」在改账户过程中不受影响');
 });
 
 test('回归 收入不影响记账环只入金库', (w) => {
   const { Store, state } = w.__app;
   const ds = w.__app.todayStr();
   Store.data.transactions = [];
-  Store.data.vault = { wechat: 0, alipay: 0, bank: 0 };
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
   w.__app.switchPage('ledger');
   const form = w.document.querySelector('#page-ledger form.entry-form');
   // 切到收入（.tab 是表单的兄弟节点，位于同一张卡片内）
@@ -336,7 +415,7 @@ test('回归 分类统计与图例', (w) => {
   const { Store } = w.__app;
   const ds = w.__app.todayStr();
   Store.data.transactions = [];
-  Store.data.vault = { wechat: 0, alipay: 0, bank: 0 };
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
   [
     ['吃饭', 20], ['奶茶', 15], ['宵夜', 10], ['宿舍', 5], ['交通', 8],
   ].forEach(([c, a], i) => {
