@@ -1607,6 +1607,80 @@ select.f-category.fallback-native {
 .cover-ai-pane .btn { margin-top: 12px; }
 .cover-ai-pane .btn:disabled { opacity: .55; cursor: not-allowed; }
 
+/* =========================================================================
+   26. TVmaze 搜索
+   ========================================================================= */
+.show-search-block {
+  margin-bottom: 18px;
+  padding: 14px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1.5px dashed rgba(16, 40, 30, .12);
+}
+.show-search-block .field-label { display: flex; align-items: center; gap: 6px; }
+.show-search-block .field-label .icon { width: 15px; height: 15px; }
+.show-search-block .opt { font-weight: 500; color: var(--ink-300); font-style: normal; }
+.show-search-row { display: flex; gap: 8px; margin-top: 8px; }
+.show-search-row .input { flex: 1; min-width: 0; }
+.show-search-row .btn { flex: 0 0 auto; white-space: nowrap; }
+
+.tvmaze-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(86px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.tvmaze-results:empty { margin-top: 0; }
+.tvmaze-result {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 6px; cursor: pointer;
+  border-radius: var(--r-sm);
+  border: 1.5px solid transparent;
+  background: var(--surface-1, #fff);
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.tvmaze-result:hover { border-color: var(--brand-400); background: var(--brand-50); }
+.tvmaze-result.active { border-color: var(--brand-500); background: var(--brand-50); }
+.tvmaze-result img,
+.tvmaze-noimg {
+  width: 100%; aspect-ratio: 2 / 3; object-fit: cover;
+  border-radius: var(--r-xs); background: var(--surface-2);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-300);
+}
+.tvmaze-noimg .icon { width: 20px; height: 20px; }
+.tvmaze-result-name {
+  font-size: var(--fs-xs); font-weight: 600; color: var(--ink-700);
+  line-height: 1.35; word-break: break-word;
+}
+.tvmaze-result-meta { font-size: var(--fs-xs); color: var(--ink-400); }
+
+.tvmaze-seasons {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;
+}
+.tvmaze-seasons[hidden] { display: none; }
+.tvmaze-season {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px 6px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-1, #fff);
+  border: 1.5px solid rgba(16, 40, 30, .08);
+  cursor: pointer; font-size: var(--fs-sm); font-weight: 560; color: var(--ink-600);
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.tvmaze-season:hover { border-color: var(--brand-400); background: var(--brand-50); color: var(--brand-700); }
+.tvmaze-season img {
+  width: 26px; height: 38px; object-fit: cover; border-radius: 3px; flex: 0 0 auto;
+}
+.tvmaze-season-ep { font-size: var(--fs-xs); color: var(--ink-400); font-weight: 500; }
+
+.tvmaze-status {
+  margin: 10px 0 0; font-size: var(--fs-xs); color: var(--ink-500); line-height: 1.5;
+}
+.tvmaze-status[hidden] { display: none; }
+.tvmaze-status.is-loading { color: var(--ink-400); }
+.tvmaze-status.is-error { color: var(--warn); }
+
 /* 观影页响应式 */
 @media (max-width: 1024px) {
   .shows-stats { grid-template-columns: repeat(2, 1fr); }

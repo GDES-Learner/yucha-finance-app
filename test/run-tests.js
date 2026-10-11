@@ -30,24 +30,36 @@ function boot() {
   const { window } = dom;
 
   const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const tvmazeJs = fs.readFileSync(path.join(ROOT, 'tvmaze.js'), 'utf8');
   const cloudJs = fs.readFileSync(path.join(ROOT, 'cloud.js'), 'utf8');
-  // app.js 与 cloud.js 合并进同一 IIFE，cloud.js 的函数在 app.js 的 Store.save() 中按名调用
+  // 环境桩：jsdom 无 fetch / AbortController。
+  // 默认让 fetch 直接失败，模拟「网络不可用」，保证既有用例不受联网逻辑影响；
+  // 需要联网的用例用 withFetch() 临时替换。
+  window.fetch = function () {
+    return Promise.reject(new Error('network disabled in tests'));
+  };
+  if (typeof window.AbortController === 'undefined') {
+    window.AbortController = function () { this.signal = null; this.abort = function () {}; };
+  }
+  // app.js / tvmaze.js / cloud.js 合并进同一 IIFE（三者按名互相调用）
   const instrumented =
-    '(function(){\n' + appJs + '\n' + cloudJs + '\n' +
+    '(function(){\n' + appJs + '\n' + tvmazeJs + '\n' + cloudJs + '\n' +
     'window.__app = { Store, state, CATEGORIES, CATEGORY_ICON, CATEGORY_COLOR, ACCOUNTS, ' +
     'normalizeCategory, renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr, ' +
     'renderMonthlySummary, monthTotals, monthCategoryTotals, addMonths, ' +
     'applyAppName, openRenameModal, DEFAULT_APP_NAME, DATA_VERSION, ' +
     'SHOW_STATUSES, SHOW_STATUS_META, SHOW_SORTS, SHOW_COVER_TYPES, ' +
-    'normalizeShow, normalizeWatchLog, validateSeasonEpisode, filterShows, sortShows, groupShows, ' +
-    'incEpisode, decEpisode, showProgressText, showProgressPercent, ' +
+    'normalizeShow, normalizeWatchLog, validateEpisode, filterShows, sortShows, groupShows, ' +
+    'incEpisode, decEpisode, showProgressText, showProgressPercent, progressWarn, ' +
     'renderShows, renderShowsStats, renderShowsFilters, showCardHtml, showSectionHtml, ' +
     'coverImgHtml, coverPlaceholder, showProgressBarHtml, ' +
     'openAddShowModal, openEditShowModal, openShowDetail, openFinishModal, openDeleteShowModal, ' +
-    'openProgressModal, initShowsPage, ' +
+    'openProgressModal, initShowsPage, readShowForm, showFormHtml, ' +
     'COVER_DB_NAME, COVER_STORE, coverDbAvailable, coverSave, coverGet, coverDelete, ' +
     'coverGetURL, hydrateCovers, saveCoverFile, revokeCoverURL, ' +
     'coverTokens, coverUrlCache, coverPickerHtml, readCoverPicker, hydrateCoverPicker, ' +
+    'stripHtml, tvmazeSearchShows, tvmazeGetSeasons, tvmazeSeasonToFields, applyTvmazeFields, ' +
+    'tvmazeSeasonTitle, mapTvmazeShow, showSearchBlockHtml, renderTvmazeShows, setTvmazeStatus, ' +
     'CLOUD_PUBLIC_CONFIG, CLOUD_TABLE, ensureCloudClient, isCloudSignedIn, renderSyncEntry, ' +
     'renderCloudCard, openLoginModal, cloudPush, cloudPull, scheduleAutoPush, escapeHtml };\n' +
     // coverPickerState 是被整体重新赋值的 let 变量，直接放进对象会快照化，
@@ -57,6 +69,24 @@ function boot() {
   window.eval(instrumented);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
   return window;
+}
+
+/**
+ * 在单个用例内临时替换 fetch，返回一个可解析的响应。
+ * @param {object} w   boot() 返回的 window
+ * @param {function} impl 接收 url，返回 {ok, status, body}
+ */
+function withFetch(w, impl) {
+  w.fetch = function (url) {
+    const r = impl(String(url));
+    if (!r) return Promise.reject(new Error('no match'));
+    if (r.reject) return Promise.reject(r.reject);
+    return Promise.resolve({
+      ok: r.ok !== false,
+      status: r.status || 200,
+      json: function () { return Promise.resolve(r.body); },
+    });
+  };
 }
 
 /* ---------- 工具 ---------- */
@@ -253,7 +283,7 @@ test('需求6 数据持久化到 localStorage', (w) => {
   ok(migratedVault.wechat_change === 128.5, '旧 wechat 余额整体迁入「零钱」');
   ok(migratedVault.wechat_lct === 0, '「零钱通」初始为 0');
   ok(!('wechat' in migratedVault), '旧 wechat 键已被移除');
-  ok(dom3.window.__app.Store.data.version === 4, '数据版本升级为 4');
+  ok(dom3.window.__app.Store.data.version === 5, '数据版本升级为 5');
   ok(Array.isArray(dom3.window.__app.Store.data.shows), '迁移后补齐 shows 数组');
   ok(Array.isArray(dom3.window.__app.Store.data.watchLogs), '迁移后补齐 watchLogs 数组');
 
@@ -832,12 +862,38 @@ test('需求11 登录弹窗结构完整且校验先行', (w) => {
 /* =========================================================================
    观影模块 —— A 数据 / 迁移
    ========================================================================= */
-test('观影A 数据版本为 4 且新字段齐备', (w) => {
+test('观影A 数据版本为 5 且新字段齐备', (w) => {
   const d = w.__app.Store.data;
-  ok(d.version === 4, 'DATA_VERSION 为 4');
+  ok(d.version === 5, 'DATA_VERSION 为 5');
   ok(Array.isArray(d.shows), 'shows 为数组');
   ok(Array.isArray(d.watchLogs), 'watchLogs 为数组');
-  ok(w.__app.DATA_VERSION === 4, '导出常量 DATA_VERSION 为 4');
+  ok(w.__app.DATA_VERSION === 5, '导出常量 DATA_VERSION 为 5');
+});
+
+test('观影A v4 旧数据迁移：季号并入标题并移除季字段', (w) => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const legacy = JSON.stringify({
+    version: 4, appName: '测试', customNav: [],
+    transactions: [], budgets: {}, vault: {},
+    shows: [
+      { id: 'a', title: '进击的巨人', season: 3, episode: 5, totalSeasons: 4, currentSeasonEpisodes: 22, status: 'watching' },
+      { id: 'b', title: '某部电影', season: 1, episode: 1, currentSeasonEpisodes: 1, status: 'want' },
+    ],
+    watchLogs: [],
+  });
+  const dom = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  dom.window.localStorage.setItem('life_assistant_v1', legacy);
+  dom.window.eval('(function(){' + fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8') +
+    'window.__app={Store, DATA_VERSION};})();');
+  dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded', { bubbles: true }));
+  const d = dom.window.__app.Store.data;
+  ok(d.version === 5, 'v4 → v5 升级成功');
+  const a = d.shows.find((s) => s.id === 'a');
+  const b = d.shows.find((s) => s.id === 'b');
+  ok(a.title === '进击的巨人3', 'season=3 的季号并入标题');
+  ok(!('season' in a) && !('totalSeasons' in a), '季与总季数字段已移除');
+  ok(a.episode === 5 && a.currentSeasonEpisodes === 22, '集数与本季集数保留');
+  ok(b.title === '某部电影', 'season=1 不追加数字后缀');
 });
 
 test('观影A 旧版（v3）数据迁移后补空数组且不破坏原数据', (w) => {
@@ -854,7 +910,7 @@ test('观影A 旧版（v3）数据迁移后补空数组且不破坏原数据', (
     'window.__app={Store, DATA_VERSION, normalizeShow, normalizeWatchLog};})();');
   dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded', { bubbles: true }));
   const d = dom.window.__app.Store.data;
-  ok(d.version === 4, 'v3 → v4 升级成功');
+  ok(d.version === 5, 'v3 → v5 升级成功');
   ok(Array.isArray(d.shows) && d.shows.length === 0, 'shows 补为空数组');
   ok(Array.isArray(d.watchLogs) && d.watchLogs.length === 0, 'watchLogs 补为空数组');
   ok(d.transactions.length === 1, '原有交易未被破坏');
@@ -876,7 +932,8 @@ test('观影A sanitize 丢弃非法剧集并兜底字段', (w) => {
   ok(shows.length === 2, '仅保留 2 条合法剧集');
   const s1 = shows.find((s) => s.id === 's1');
   ok(s1.status === 'want', '非法 status 回落为 want');
-  ok(s1.season === 1 && s1.episode === 1, '非法季集回落为 1');
+  ok(s1.episode === 1, '非法集数回落为 1');
+  ok(!('season' in s1), '非法 season 字段被清除');
   ok(s1.year === 1900, '年份下界 clamp 到 1900');
   ok(s1.rating === 10, '评分上界 clamp 到 10');
   ok(s1.coverType === 'none', '非法封面类型回落 none');
@@ -941,8 +998,8 @@ test('观影B 删除剧集级联清理观看记录', (w) => {
   const app = w.__app;
   const a = app.Store.addShow({ title: 'A剧' });
   const b = app.Store.addShow({ title: 'B剧' });
-  app.Store.updateProgress(a.id, 1, 2);
-  app.Store.updateProgress(b.id, 1, 3);
+  app.Store.updateProgress(a.id, 2);
+  app.Store.updateProgress(b.id, 3);
   ok(app.Store.data.watchLogs.length === 2, '两条观看记录已写入');
   app.Store.removeShow(a.id);
   ok(app.Store.getShow(a.id) === undefined, 'A 剧已删除');
@@ -953,8 +1010,8 @@ test('观影B 删除剧集级联清理观看记录', (w) => {
 test('观影B 观看记录可按剧集倒序查询', (w) => {
   const app = w.__app;
   const s = app.Store.addShow({ title: '记录剧' });
-  app.Store.updateProgress(s.id, 1, 1);
-  app.Store.updateProgress(s.id, 1, 2);
+  app.Store.updateProgress(s.id, 1);
+  app.Store.updateProgress(s.id, 2);
   app.Store.changeShowStatus(s.id, 'paused');
   const logs = app.Store.getWatchLogs(s.id, 10);
   ok(logs.length === 3, '三条记录');
@@ -966,64 +1023,60 @@ test('观影B 观看记录可按剧集倒序查询', (w) => {
 /* =========================================================================
    观影模块 —— C 进度（核心）
    ========================================================================= */
-test('观影C validateSeasonEpisode 正整数校验', (w) => {
-  const v = w.__app.validateSeasonEpisode;
-  ok(v(1, 5).ok, '合法季集通过');
-  ok(!v(0, 5).ok, '季数 0 非法');
-  ok(!v(1, 0).ok, '集数 0 非法');
-  ok(v(1.9, 2.7).season === 1 && v(1.9, 2.7).episode === 2, '小数季集被向下取整');
-  ok(v(1, 5, 10).ok, '本季 10 集、第 5 集合法');
-  const r = v(1, 11, 10);
+test('观影C validateEpisode 正整数校验（一季一条，只有集数）', (w) => {
+  const v = w.__app.validateEpisode;
+  ok(v(5).ok, '合法集数通过');
+  ok(!v(0).ok, '集数 0 非法');
+  ok(!v(-3).ok, '负数集数非法');
+  ok(v(2.7).episode === 2, '小数集数被向下取整');
+  ok(v(5, 10).ok, '本季 10 集、第 5 集合法');
+  const r = v(11, 10);
   ok(!r.ok, '超出本季总集数判非法');
   ok(r.error.includes('10'), '错误信息含本季总集数');
-  ok(v(1, 100, null).ok, '总集数未知时不设上限');
+  ok(v(100, null).ok, '总集数未知时不设上限');
 });
 
-test('观影C incEpisode 未知本季总集数只 +1（不进季）', (w) => {
+test('观影C incEpisode 未知本季总集数只 +1', (w) => {
   const app = w.__app;
-  const s = { season: 1, episode: 5, currentSeasonEpisodes: null, totalSeasons: null };
+  const s = { episode: 5, currentSeasonEpisodes: null };
   const r = app.incEpisode(s);
-  ok(r.season === 1 && r.episode === 6, '集数 +1 且季数不变');
+  ok(r.episode === 6, '集数 +1');
+  ok(!('season' in r), '结果不含季字段');
 });
 
-test('观影C incEpisode 本季最后一集进入下一季', (w) => {
+test('观影C incEpisode 到达本季末集则停在末集（不跨季）', (w) => {
   const app = w.__app;
-  const s = { season: 1, episode: 10, currentSeasonEpisodes: 10, totalSeasons: 3 };
+  const s = { episode: 10, currentSeasonEpisodes: 10 };
   const r = app.incEpisode(s);
-  ok(r.season === 2 && r.episode === 1, '末集后进入 S2 第 1 集');
+  ok(r.episode === 10, '末集不再前进');
+  const s2 = { episode: 9, currentSeasonEpisodes: 10 };
+  ok(app.incEpisode(s2).episode === 10, '倒数第二集可推进到末集');
 });
 
-test('观影C incEpisode 不越过总季数上界', (w) => {
+test('观影C incEpisode 末集不回绕（一季一条的核心保证）', (w) => {
   const app = w.__app;
-  const s = { season: 3, episode: 10, currentSeasonEpisodes: 10, totalSeasons: 3 };
-  const r = app.incEpisode(s);
-  ok(r.season === 3 && r.episode === 10, '已到最后一季最后一集则不再前进');
+  // 连续 +1 多次，必须稳定停在 cap，绝不出现「第 1 集」的回绕
+  let s = { episode: 10, currentSeasonEpisodes: 10 };
+  for (let i = 0; i < 5; i++) s = { episode: app.incEpisode(s).episode, currentSeasonEpisodes: 10 };
+  ok(s.episode === 10, '反复 +1 稳定停在末集');
+  ok(s.episode !== 1, '不会回绕到第 1 集');
 });
 
-test('观影C decEpisode 从季首回退到上一季', (w) => {
+test('观影C decEpisode 逐集回退且下限保护', (w) => {
   const app = w.__app;
-  const s = { season: 2, episode: 1, currentSeasonEpisodes: 12, totalSeasons: 3 };
-  const r = app.decEpisode(s);
-  ok(r.season === 1 && r.episode === 12, 'S2E1 回退到 S1E12（上季集数已知）');
-  const s2 = { season: 2, episode: 1, currentSeasonEpisodes: null };
-  const r2 = app.decEpisode(s2);
-  ok(r2.season === 1 && r2.episode === 1, '上季集数未知时回退到 S1E1');
-});
-
-test('观影C decEpisode 下限保护（S1E1 不再后退）', (w) => {
-  const app = w.__app;
-  const r = app.decEpisode({ season: 1, episode: 1 });
-  ok(r.season === 1 && r.episode === 1, 'S1E1 保持不变');
+  ok(app.decEpisode({ episode: 5 }).episode === 4, '第 5 集回退到第 4 集');
+  ok(app.decEpisode({ episode: 1 }).episode === 1, '第 1 集不再后退');
+  ok(app.decEpisode({ episode: 1, currentSeasonEpisodes: 12 }).episode === 1, '受下限保护不受集数影响');
 });
 
 test('观影C 改状态不删除进度与资料', (w) => {
   const app = w.__app;
   const s = app.Store.addShow({ title: '改状态剧', summary: '简介保留', rating: 8 });
-  app.Store.updateProgress(s.id, 2, 7);
+  app.Store.updateProgress(s.id, 7);
   app.Store.changeShowStatus(s.id, 'paused');
   const after = app.Store.getShow(s.id);
   ok(after.status === 'paused', '状态已改为暂停');
-  ok(after.season === 2 && after.episode === 7, '进度未被清空');
+  ok(after.episode === 7, '进度未被清空');
   ok(after.summary === '简介保留', '简介未被清空');
   ok(after.rating === 8, '评分未被清空');
 });
@@ -1031,14 +1084,14 @@ test('观影C 改状态不删除进度与资料', (w) => {
 test('观影C 标记已看完保留资料并可改回在看继续推进', (w) => {
   const app = w.__app;
   const s = app.Store.addShow({ title: '完结剧', genre: '悬疑' });
-  app.Store.updateProgress(s.id, 1, 3);
+  app.Store.updateProgress(s.id, 3);
   app.Store.finishShow(s.id, { date: '2026-02-01', rating: 9.5, note: '神作' });
   const fin = app.Store.getShow(s.id);
   ok(fin.status === 'watched', '状态为已看完');
   ok(fin.finishedAt === '2026-02-01', '完成日期已记录');
   ok(fin.rating === 9.5, '评分已记录');
   ok(fin.note === '神作', '观后感已记录');
-  ok(fin.season === 1 && fin.episode === 3, '进度资料保留');
+  ok(fin.episode === 3, '进度资料保留');
   // 改回在看后仍可推进
   app.Store.changeShowStatus(s.id, 'watching');
   const r = app.incEpisode(app.Store.getShow(s.id));
@@ -1048,23 +1101,71 @@ test('观影C 标记已看完保留资料并可改回在看继续推进', (w) =>
 test('观影C 首次推进进度自动从「想看」转为「在看」', (w) => {
   const app = w.__app;
   const s = app.Store.addShow({ title: '自动转态剧', status: 'want' });
-  app.Store.updateProgress(s.id, 1, 1);
+  app.Store.updateProgress(s.id, 1);
   ok(app.Store.getShow(s.id).status === 'watching', '进度推进后状态变为在看');
   ok(!!app.Store.getShow(s.id).lastWatchedAt, 'lastWatchedAt 已写入');
 });
 
-test('观影C 不同季集数互不干扰（本季总集数独立）', (w) => {
+test('观影C 本季总集数变化后末集判定随之更新', (w) => {
   const app = w.__app;
-  const s = app.Store.addShow({ title: '多季剧', currentSeasonEpisodes: 12 });
-  // 第 1 季 12 集 → 进第 2 季时集数重置为 1
-  app.Store.updateProgress(s.id, 1, 12);
+  const s = app.Store.addShow({ title: '集数可变剧', currentSeasonEpisodes: 12 });
+  app.Store.updateProgress(s.id, 12);
   let r = app.incEpisode(app.Store.getShow(s.id));
-  ok(r.season === 2 && r.episode === 1, '跨季后集数重置为 1，不复用上一季集数');
-  // 若用户把本季总集数改为 8，则第 8 集即为末集
+  ok(r.episode === 12, '12 集为末集，停住');
+  // 用户把本季总集数改为 8，则第 8 集即为末集、第 12 集已越界
   app.Store.updateShow(s.id, { currentSeasonEpisodes: 8 });
-  app.Store.updateProgress(s.id, 2, 8);
+  app.Store.updateProgress(s.id, 8);
   r = app.incEpisode(app.Store.getShow(s.id));
-  ok(r.season === 3 && r.episode === 1, '按新的本季总集数判定季终');
+  ok(r.episode === 8, '按新的本季总集数判定末集');
+  ok(app.progressWarn({ episode: 12, currentSeasonEpisodes: 8 }) !== '', '越界时给出提示');
+  ok(app.progressWarn({ episode: 5, currentSeasonEpisodes: 8 }) === '', '未越界不提示');
+});
+
+/* =========================================================================
+   观影模块 —— I2 搜索区 / 一季一条 表单
+   ========================================================================= */
+test('观影I2 表单已移除季字段，只保留集数与本季总集数', (w) => {
+  const app = w.__app;
+  app.openAddShowModal();
+  ok(!w.document.getElementById('showSeason'), '「第几季」输入框已移除');
+  ok(!w.document.getElementById('showTotalSeasons'), '「总季数」输入框已移除');
+  ok(!!w.document.getElementById('showEpisode'), '「第几集」输入框保留');
+  ok(!!w.document.getElementById('showSeasonEpisodes'), '「本季总集数」输入框保留');
+});
+
+test('观影I2 表单含 TVmaze 搜索区', (w) => {
+  const app = w.__app;
+  app.openAddShowModal();
+  ok(!!w.document.getElementById('showSearchBlock'), '搜索区存在');
+  ok(!!w.document.getElementById('tvmazeQuery'), '搜索输入框存在');
+  ok(!!w.document.getElementById('tvmazeSearchBtn'), '搜索按钮存在');
+  ok(!!w.document.getElementById('tvmazeResults'), '结果容器存在');
+});
+
+test('观影I2 readShowForm 不再产出季字段', (w) => {
+  const app = w.__app;
+  app.openAddShowModal();
+  w.document.getElementById('showTitle').value = '测试剧';
+  w.document.getElementById('showEpisode').value = '5';
+  w.document.getElementById('showSeasonEpisodes').value = '12';
+  const f = app.readShowForm();
+  ok(f.title === '测试剧' && f.episode === '5', '标题与集数已读取');
+  ok(!('season' in f) && !('totalSeasons' in f), '表单结果不含季字段');
+});
+
+test('观影I2 新增的剧集不含 season / totalSeasons', (w) => {
+  const app = w.__app;
+  const s = app.Store.addShow({ title: '一季一条测试', episode: 3, currentSeasonEpisodes: 10 });
+  ok(!('season' in s), '新增记录无 season 字段');
+  ok(!('totalSeasons' in s), '新增记录无 totalSeasons 字段');
+  ok(s.episode === 3, '集数正常保存');
+});
+
+test('观影I2 进度文案不含季前缀', (w) => {
+  const app = w.__app;
+  ok(app.showProgressText({ episode: 5, currentSeasonEpisodes: 10 }) === '第 5 / 10 集', '已知集数显示区间');
+  ok(app.showProgressText({ episode: 5 }) === '第 5 集', '未知集数只显示集号');
+  ok(app.showProgressText({ episode: 5, currentSeasonEpisodes: 10 }).indexOf('S') < 0, '不含 S 前缀');
 });
 
 /* =========================================================================
@@ -1174,7 +1275,7 @@ test('观影D 四区块 + 统计概览正确渲染', (w) => {
   const app = w.__app;
   app.Store.reset();
   const a = app.Store.addShow({ title: '在看剧', status: 'watching' });
-  app.Store.updateProgress(a.id, 1, 3);            // 有观看记录 → 进「继续观看」
+  app.Store.updateProgress(a.id, 3);            // 有观看记录 → 进「继续观看」
   const b = app.Store.addShow({ title: '刚标记在看', status: 'watching' }); // 无记录 → 进「在看」
   app.Store.addShow({ title: '想看剧', status: 'want' });
   app.Store.addShow({ title: '已看完剧', status: 'watched' });
@@ -1264,7 +1365,7 @@ test('观影D groupShows 正确分区（有观看记录才进「继续观看」�
 test('观影D 未知本季总集数不画进度条、不显百分比', (w) => {
   const app = w.__app;
   const s = app.Store.addShow({ title: '集数未知', status: 'watching' });
-  app.Store.updateProgress(s.id, 1, 5);
+  app.Store.updateProgress(s.id, 5);
   app.renderShows();
   const card = w.document.querySelector(`.poster-card[data-id="${s.id}"]`);
   ok(!!card, '卡片已渲染');
@@ -1275,7 +1376,7 @@ test('观影D 未知本季总集数不画进度条、不显百分比', (w) => {
 test('观影D 已知本季总集数渲染进度条与「第 x / y 集」', (w) => {
   const app = w.__app;
   const s = app.Store.addShow({ title: '集数已知', status: 'watching', currentSeasonEpisodes: 10 });
-  app.Store.updateProgress(s.id, 1, 4);
+  app.Store.updateProgress(s.id, 4);
   app.renderShows();
   const card = w.document.querySelector(`.poster-card[data-id="${s.id}"]`);
   ok(card.querySelectorAll('.progress-track').length === 1, '渲染进度条');
@@ -1327,7 +1428,7 @@ test('观影F 卡片「下一集」按钮推进进度', (w) => {
   const app = w.__app;
   app.Store.reset();
   const s = app.Store.addShow({ title: '推进剧', status: 'watching', currentSeasonEpisodes: 5 });
-  app.Store.updateProgress(s.id, 1, 1);
+  app.Store.updateProgress(s.id, 1);
   app.switchPage('shows');
   const btn = w.document.querySelector(`button[data-act="continue"][data-id="${s.id}"]`);
   ok(!!btn, '卡片上有「下一集」按钮');
@@ -1380,26 +1481,26 @@ test('观影F 编辑弹窗自动回填全部字段', (w) => {
   app.Store.reset();
   const s = app.Store.addShow({
     title: '回填剧', originalTitle: 'Original', year: 2019, genre: '悬疑',
-    status: 'paused', season: 2, episode: 7, currentSeasonEpisodes: 12, totalSeasons: 3,
+    status: 'paused', episode: 7, currentSeasonEpisodes: 12,
     summary: '简介文本', note: '备注文本', rating: 8.5,
   });
   app.openEditShowModal(s.id);
   ok(w.document.getElementById('showTitle').value === '回填剧', '标题回填');
   ok(w.document.getElementById('showOriginalTitle').value === 'Original', '原文标题回填');
   ok(w.document.getElementById('showYear').value === '2019', '年份回填');
-  ok(w.document.getElementById('showSeason').value === '2', '季回填');
   ok(w.document.getElementById('showEpisode').value === '7', '集回填');
   ok(w.document.getElementById('showSeasonEpisodes').value === '12', '本季集数回填');
   ok(w.document.getElementById('showRating').value === '8.5', '评分回填');
   ok(w.document.querySelector('#showStatusSegs .seg.active').dataset.status === 'paused', '状态选中暂停');
   ok(w.document.getElementById('showSummary').value === '简介文本', '简介回填');
+  ok(w.document.getElementById('showNote').value === '备注文本', '观后感回填');
 });
 
 test('观影F 改状态不影响进度（通过详情/状态操作链路）', (w) => {
   const app = w.__app;
   app.Store.reset();
   const s = app.Store.addShow({ title: '状态剧', status: 'watching', currentSeasonEpisodes: 10 });
-  app.Store.updateProgress(s.id, 1, 6);
+  app.Store.updateProgress(s.id, 6);
   app.Store.changeShowStatus(s.id, 'paused');
   ok(app.Store.getShow(s.id).episode === 6, '进度保留');
   ok(app.Store.getShow(s.id).status === 'paused', '状态已改');
@@ -1432,7 +1533,7 @@ test('观影F 详情弹窗含观看记录与操作组', (w) => {
   const app = w.__app;
   app.Store.reset();
   const s = app.Store.addShow({ title: '详情剧', status: 'watching', currentSeasonEpisodes: 8, summary: '故事简介' });
-  app.Store.updateProgress(s.id, 1, 3);
+  app.Store.updateProgress(s.id, 3);
   app.openShowDetail(s.id);
   const modal = w.document.querySelector('#modal');
   ok(modal.textContent.includes('详情剧'), '显示剧名');
@@ -1447,7 +1548,7 @@ test('观影F 详情内「看下一集」推进并刷新详情', (w) => {
   const app = w.__app;
   app.Store.reset();
   const s = app.Store.addShow({ title: '详情推进剧', status: 'watching', currentSeasonEpisodes: 6 });
-  app.Store.updateProgress(s.id, 1, 2);
+  app.Store.updateProgress(s.id, 2);
   app.openShowDetail(s.id);
   click(w, w.document.querySelector('#modal [data-act="continue"]'));
   ok(app.Store.getShow(s.id).episode === 3, '进度推进到第 3 集');
@@ -1498,8 +1599,8 @@ test('观影G 新增观影数据不影响记账 / 金库 / 预算', (w) => {
 
   // 大量的观影操作
   const s = app.Store.addShow({ title: '兼容剧', status: 'watching', currentSeasonEpisodes: 10 });
-  app.Store.updateProgress(s.id, 1, 1);
-  app.Store.updateProgress(s.id, 1, 2);
+  app.Store.updateProgress(s.id, 1);
+  app.Store.updateProgress(s.id, 2);
   app.Store.changeShowStatus(s.id, 'paused');
   app.Store.finishShow(s.id);
   app.Store.addShow({ title: '另一部' });
@@ -1514,7 +1615,7 @@ test('观影G 导出 / 导入保留观影数据', (w) => {
   const app = w.__app;
   app.Store.reset();
   const s = app.Store.addShow({ title: '导出剧', genre: '科幻', status: 'watching', currentSeasonEpisodes: 8 });
-  app.Store.updateProgress(s.id, 2, 3);
+  app.Store.updateProgress(s.id, 3);
   const snapshot = JSON.parse(JSON.stringify(app.Store.data));
   ok(Array.isArray(snapshot.shows) && snapshot.shows.length === 1, '快照包含剧集');
   ok(snapshot.shows[0].title === '导出剧', '标题正确');
@@ -1527,7 +1628,7 @@ test('观影G 导出 / 导入保留观影数据', (w) => {
   app.Store.sanitize();
   app.Store.save();
   ok(app.Store.getShows().length === 1, '导入后剧集恢复');
-  ok(app.Store.getShows()[0].season === 2 && app.Store.getShows()[0].episode === 3, '进度恢复');
+  ok(app.Store.getShows()[0].episode === 3, '进度恢复');
 });
 
 /* =========================================================================
@@ -1541,7 +1642,7 @@ test('观影H 观影数据随快照进入云同步 payload', (w) => {
   const payload = JSON.parse(JSON.stringify(app.Store.data));
   ok(Array.isArray(payload.shows) && payload.shows.length === 1, 'payload 含 shows');
   ok(Array.isArray(payload.watchLogs), 'payload 含 watchLogs');
-  ok(payload.version === 4, 'payload 版本为 4');
+  ok(payload.version === 5, 'payload 版本为 5');
 });
 
 test('观影H 本地封面仅同步 key（二进制不上云）', (w) => {
@@ -1704,6 +1805,252 @@ test('观影I 切 tab 往返不清 key（防止误删旧封面）', (w) => {
 
   click(w, w.document.getElementById('modalOk'));
   ok(app.Store.getShow(s.id).coverKey === 'img_roundtrip', '保存后封面保留');
+});
+
+/* =========================================================================
+   观影模块 —— J TVmaze 搜索（全部用 fetch 桩，不依赖真实网络）
+   ========================================================================= */
+
+/** 构造一份 TVmaze search 响应 */
+function tvmazeSearchBody() {
+  return [
+    { score: 0.9, show: { id: 919, name: 'Attack on Titan', premiered: '2013-04-07', rating: { average: 8.9 },
+      genres: ['Action', 'Anime', 'Fantasy', 'Horror'], image: { medium: 'https://static.tvmaze.com/a.jpg', original: 'https://static.tvmaze.com/a-o.jpg' },
+      summary: '<p>Known in Japan as <b>Shingeki no Kyojin</b> &amp; more.</p>', url: 'https://www.tvmaze.com/shows/919' } },
+    { score: 0.5, show: { id: 100, name: '无图剧', premiered: '', rating: { average: null }, genres: [], image: null, summary: null, url: '' } },
+  ];
+}
+/** 构造一份 /shows/:id/seasons 响应（含 episodeOrder 为 null 的季） */
+function tvmazeSeasonsBody() {
+  return [
+    { number: 1, premiereDate: '2013-04-07', endDate: '2015-04-09', episodeOrder: 25, image: { medium: 'https://static.tvmaze.com/s1.jpg' } },
+    { number: 2, premiereDate: '2017-04-01', endDate: '2018-04-09', episodeOrder: 12, image: { medium: 'https://static.tvmaze.com/s2.jpg' } },
+    { number: 3, premiereDate: '2018-07-22', endDate: '2019-06-30', episodeOrder: 22, image: { medium: 'https://static.tvmaze.com/s3.jpg' } },
+    { number: 4, premiereDate: '2020-12-06', endDate: '2023-11-05', episodeOrder: null, image: { medium: 'https://static.tvmaze.com/s4.jpg' } },
+  ];
+}
+
+test('观影J stripHtml 去标签与实体', (w) => {
+  const f = w.__app.stripHtml;
+  ok(f('<p>Hello <b>world</b></p>') === 'Hello world', '标签被移除');
+  ok(f('A &amp; B &lt;C&gt;') === 'A & B <C>', '实体被解码');
+  ok(f(null) === '' && f(undefined) === '', '空值返回空字符串');
+  ok(f('多   空格') === '多 空格', '连续空白被压缩');
+});
+
+test('观影J tvmazeSearchShows 正常映射结果', async (w) => {
+  const app = w.__app;
+  withFetch(w, (url) => {
+    if (url.indexOf('/search/shows') > -1) return { body: tvmazeSearchBody() };
+    return null;
+  });
+  const list = await app.tvmazeSearchShows('进击的巨人');
+  ok(list.length === 2, '返回 2 条结果');
+  const a = list[0];
+  ok(a.id === '919' && a.name === 'Attack on Titan', 'id 与名称正确');
+  ok(a.year === 2013, 'premiered 提取年份');
+  ok(a.rating === 8.9, '评分正确');
+  ok(a.genreText === 'Action / Anime / Fantasy / Horror', '类型数组已拼接');
+  ok(a.summary.indexOf('<') < 0 && a.summary.indexOf('Shingeki no Kyojin') > -1, '简介去标签且保留文本');
+  ok(list[1].image === '' && list[1].rating === null, '缺失字段安全降级');
+});
+
+test('观影J tvmazeSearchShows 网络失败返回空数组且不抛错', async (w) => {
+  const app = w.__app;
+  withFetch(w, () => ({ reject: new Error('boom') }));
+  let threw = false;
+  let list = null;
+  try { list = await app.tvmazeSearchShows('任意'); } catch (e) { threw = true; }
+  ok(!threw, '不抛异常');
+  ok(Array.isArray(list) && list.length === 0, '返回空数组');
+});
+
+test('观影J tvmazeSearchShows 服务端错误返回空数组', async (w) => {
+  const app = w.__app;
+  withFetch(w, () => ({ ok: false, status: 503, body: null }));
+  const list = await app.tvmazeSearchShows('任意');
+  ok(Array.isArray(list) && list.length === 0, '非 200 响应返回空数组');
+});
+
+test('观影J tvmazeSearchShows 空关键词不发请求', async (w) => {
+  const app = w.__app;
+  let called = false;
+  withFetch(w, () => { called = true; return { body: [] }; });
+  const list = await app.tvmazeSearchShows('   ');
+  ok(called === false, '空关键词不发起请求');
+  ok(list.length === 0, '返回空数组');
+});
+
+test('观影J tvmazeGetSeasons 含集数未知的季仍返回', async (w) => {
+  const app = w.__app;
+  withFetch(w, () => ({ body: tvmazeSeasonsBody() }));
+  const seasons = await app.tvmazeGetSeasons('919');
+  ok(seasons.length === 4, '返回 4 季');
+  ok(seasons[2].number === 3 && seasons[2].episodeOrder === 22, '第 3 季 22 集');
+  ok(seasons[3].episodeOrder === null, '第 4 季集数未知保留为 null');
+  ok(seasons[3].epText === '集数未知', '未知集数显示为「集数未知」');
+  ok(seasons[0].label === '第 1 季', '季标签正确');
+});
+
+test('观影J tvmazeGetSeasons 失败返回空数组', async (w) => {
+  const app = w.__app;
+  withFetch(w, () => ({ reject: new Error('down') }));
+  const seasons = await app.tvmazeGetSeasons('919');
+  ok(Array.isArray(seasons) && seasons.length === 0, '失败返回空数组');
+  const empty = await app.tvmazeGetSeasons('');
+  ok(empty.length === 0, '空 id 返回空数组');
+});
+
+test('观影J tvmazeSeasonTitle 季号拼接规则', (w) => {
+  const f = w.__app.tvmazeSeasonTitle;
+  ok(f('进击的巨人', 1) === '进击的巨人', '第 1 季不追加数字');
+  ok(f('进击的巨人', 2) === '进击的巨人2', '第 2 季追加 2');
+  ok(f('进击的巨人', 10) === '进击的巨人10', '第 10 季追加 10');
+  ok(f('剧名', null) === '剧名', '季号未知不追加');
+});
+
+test('观影J tvmazeSeasonToFields 字段映射完整', (w) => {
+  const app = w.__app;
+  const show = app.mapTvmazeShow(tvmazeSearchBody()[0].show);
+  const season = (() => { const raw = tvmazeSeasonsBody()[2]; return { number: 3, episodeOrder: 22, premiereDate: raw.premiereDate, image: raw.image.medium }; })();
+  const f = app.tvmazeSeasonToFields(show, season);
+  ok(f.title === 'Attack on Titan3', '标题含季号');
+  ok(f.originalTitle === 'Attack on Titan', '原文标题为剧名本身');
+  ok(f.year === 2018, '年份取该季首播年');
+  ok(f.genre === 'Action / Anime / Fantasy / Horror', '类型拼接');
+  ok(f.rating === 8.9, '评分');
+  ok(f.currentSeasonEpisodes === 22, '本季集数来自 episodeOrder');
+  ok(f.coverUrl === 'https://static.tvmaze.com/s3.jpg', '封面取该季海报');
+  ok(f.externalId === '919', 'externalId 记录剧 id');
+});
+
+test('观影J tvmazeSeasonToFields 第 1 季无数字后缀', (w) => {
+  const app = w.__app;
+  const show = app.mapTvmazeShow(tvmazeSearchBody()[0].show);
+  const f = app.tvmazeSeasonToFields(show, { number: 1, episodeOrder: 25, premiereDate: '2013-04-07', image: 'https://static.tvmaze.com/s1.jpg' });
+  ok(f.title === 'Attack on Titan', '第 1 季标题不加后缀');
+  ok(f.originalTitle === '', '标题与剧名相同时不填原文标题');
+  ok(f.year === 2013, '年份取第 1 季首播年');
+});
+
+test('观影J tvmazeSeasonToFields 集数未知时留空', (w) => {
+  const app = w.__app;
+  const show = app.mapTvmazeShow(tvmazeSearchBody()[0].show);
+  const f = app.tvmazeSeasonToFields(show, { number: 4, episodeOrder: null, premiereDate: '2020-12-06', image: '' });
+  ok(f.currentSeasonEpisodes === '', '集数未知留空而非 0');
+  ok(f.coverUrl === show.image, '该季无海报时回退到剧集主海报');
+});
+
+test('观影J applyTvmazeFields 只填空、绝不覆盖已有内容', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const d = w.document;
+  d.getElementById('showTitle').value = '我自己的标题';
+  d.getElementById('showYear').value = '1999';
+  const filled = app.applyTvmazeFields({
+    title: 'Attack on Titan3', originalTitle: 'Attack on Titan', year: 2018,
+    genre: 'Action', rating: 8.9, summary: '简介', currentSeasonEpisodes: 22, coverUrl: 'https://static.tvmaze.com/s3.jpg',
+  }, app.coverPickerState);
+  ok(d.getElementById('showTitle').value === '我自己的标题', '已填标题不被覆盖');
+  ok(d.getElementById('showYear').value === '1999', '已填年份不被覆盖');
+  ok(d.getElementById('showOriginalTitle').value === 'Attack on Titan', '空字段被填入');
+  ok(d.getElementById('showGenre').value === 'Action', '空类型被填入');
+  ok(d.getElementById('showSeasonEpisodes').value === '22', '空集数被填入');
+  ok(filled.indexOf('标题') < 0, '反馈中不含被跳过的标题');
+  ok(filled.indexOf('年份') < 0, '反馈中不含被跳过的年份');
+});
+
+test('观影J applyTvmazeFields 绝不触碰观后感 / 备注', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const d = w.document;
+  // 用户已写观后感
+  d.getElementById('showNote').value = '我的私人观后感';
+  app.applyTvmazeFields({
+    title: '剧名', summary: 'API 简介', note: '绝不应写入的备注', currentSeasonEpisodes: 10,
+  }, app.coverPickerState);
+  ok(d.getElementById('showNote').value === '我的私人观后感', '已有观后感原样保留');
+  // 即使用户没写，也不应被 API 内容填充
+  d.getElementById('showNote').value = '';
+  app.applyTvmazeFields({ title: '剧名', note: '绝不应写入的备注' }, app.coverPickerState);
+  ok(d.getElementById('showNote').value === '', '观后感不会被 API 填充');
+});
+
+test('观影J 封面仅在「无封面」时被 TVmaze 填充', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const state = app.coverPickerState;
+  // 场景 1：无封面 → 应填入
+  state.type = 'none';
+  app.applyTvmazeFields({ coverUrl: 'https://static.tvmaze.com/s3.jpg', title: 'T' }, state);
+  ok(state.type === 'url', '无封面时采用 TVmaze 海报');
+  ok(state.url === 'https://static.tvmaze.com/s3.jpg', 'URL 已写入状态');
+});
+
+test('观影J 已有本地封面时不被 TVmaze 覆盖', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const state = app.coverPickerState;
+  state.type = 'local';
+  state.key = 'img_mine';
+  app.applyTvmazeFields({ coverUrl: 'https://static.tvmaze.com/s3.jpg', title: 'T' }, state);
+  ok(state.type === 'local', '封面类型仍为本地');
+  ok(state.key === 'img_mine', '本地封面 key 保留');
+  ok(state.url === '', '未被写入 TVmaze 链接');
+});
+
+test('观影J 搜索区状态提示可切换且支持错误态', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const d = w.document;
+  app.setTvmazeStatus('搜索中…', 'loading');
+  ok(d.getElementById('tvmazeStatus').hidden === false, '状态行可见');
+  ok(d.getElementById('tvmazeStatus').className.indexOf('is-loading') > -1, 'loading 样式生效');
+  app.setTvmazeStatus('TVmaze 暂时不可用，请手动填写。', 'error');
+  ok(d.getElementById('tvmazeStatus').textContent.indexOf('手动填写') > -1, '错误提示文案正确');
+  ok(d.getElementById('tvmazeStatus').className.indexOf('is-error') > -1, 'error 样式生效');
+  app.setTvmazeStatus('');
+  ok(d.getElementById('tvmazeStatus').hidden === true, '空状态隐藏状态行');
+});
+
+test('观影J 搜索无结果时给出提示且表单仍可提交', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const d = w.document;
+  app.renderTvmazeShows([]);
+  ok(d.getElementById('tvmazeStatus').textContent.indexOf('没有找到') > -1, '无结果提示');
+  // 手动填写仍能正常提交（网络不可用不阻塞）
+  d.getElementById('showTitle').value = '手动添加的剧';
+  click(w, d.getElementById('modalOk'));
+  const shows = app.Store.getShows();
+  ok(shows.length === 1 && shows[0].title === '手动添加的剧', '手动填写仍可正常添加');
+});
+
+test('观影J TVmaze 不可用时搜索不阻塞表单（端到端）', async (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const d = w.document;
+  withFetch(w, () => ({ reject: new Error('offline') }));
+  d.getElementById('tvmazeQuery').value = '任意剧名';
+  click(w, d.getElementById('tvmazeSearchBtn'));
+  await new Promise((r) => setTimeout(r, 30));
+  ok(d.getElementById('tvmazeStatus').textContent.length > 0, '出现失败提示');
+  ok(d.getElementById('showTitle') !== null, '表单依然可用');
+});
+
+test('观影J externalId 可由 TVmaze 结果写入并持久化', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const s = app.Store.addShow({ title: '带外部ID的剧', externalId: '919', currentSeasonEpisodes: 22 });
+  ok(s.externalId === '919', 'externalId 已写入');
+  ok(app.Store.getShow(s.id).externalId === '919', '持久化后可读回');
 });
 
 /* =========================================================================

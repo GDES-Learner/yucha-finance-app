@@ -8,7 +8,7 @@
 
 /* ---------------------- 常量 ---------------------- */
 const STORE_KEY = 'life_assistant_v1';
-const DATA_VERSION = 4;
+const DATA_VERSION = 5;
 const DEFAULT_LIMIT = 1500;
 /** 左上角应用名称的默认值（用户可在界面随时修改，覆盖后存于 data.appName） */
 const DEFAULT_APP_NAME = '鱼叉的专属app';
@@ -226,10 +226,12 @@ function normalizeShow(s) {
   s.genre = strOr(s.genre).slice(0, 60);
   s.status = SHOW_STATUSES.indexOf(s.status) > -1 ? s.status : 'want';
 
-  s.season = normSeasonEp(s.season, 1);
+  // 一季 = 一条记录：不再有「季」维度，进度只记「本季第几集」
   s.episode = normSeasonEp(s.episode, 1);
-  s.totalSeasons = normOptPositiveInt(s.totalSeasons);
   s.currentSeasonEpisodes = normOptPositiveInt(s.currentSeasonEpisodes);
+  // 退役字段：显式清掉，避免旧数据残留（迁移已在 migrate 中处理，这里兜底）
+  delete s.season;
+  delete s.totalSeasons;
 
   s.coverType = SHOW_COVER_TYPES.indexOf(s.coverType) > -1 ? s.coverType : 'none';
   s.coverUrl = safeCoverUrl(s.coverUrl);
@@ -300,7 +302,7 @@ const Store = {
     return this.data;
   },
 
-  /** 数据版本迁移：v1→v2（餐饮→吃饭）；v2→v3（微信拆为零钱/零钱通）；v3→v4（新增观影模块） */
+  /** 数据版本迁移：v1→v2（餐饮→吃饭）；v2→v3（微信拆为零钱/零钱通）；v3→v4（新增观影模块）；v4→v5（一季一条） */
   migrate() {
     const v = Number(this.data.version || 1);
 
@@ -327,6 +329,24 @@ const Store = {
       // v3 → v4：新增「观影」模块，老数据补空数组；不改动 transactions / budgets / vault
       if (!Array.isArray(this.data.shows)) this.data.shows = [];
       if (!Array.isArray(this.data.watchLogs)) this.data.watchLogs = [];
+    }
+
+    if (v < 5) {
+      // v4 → v5：「一季一条」，移除季维度。
+      // 旧记录的 season>1 时把季号并入标题（否则同名多季条目无法分辨），
+      // 例：进击的巨人 + season 3 → 「进击的巨人3」，与新流程产出的标题格式一致。
+      // totalSeasons 无复用价值，直接丢弃（用户确认「不用管，可以删除」）。
+      (this.data.shows || []).forEach((s) => {
+        if (!s || typeof s !== 'object') return;
+        const legacySeason = normOptPositiveInt(s.season);
+        if (legacySeason != null && legacySeason > 1) {
+          const base = strOr(s.title).trim() || '未命名';
+          // 幂等：标题已以该数字结尾则不重复追加
+          if (!new RegExp(legacySeason + '$').test(base)) s.title = (base + legacySeason).slice(0, 120);
+        }
+        delete s.season;
+        delete s.totalSeasons;
+      });
     }
 
     this.data.version = DATA_VERSION;
@@ -503,11 +523,10 @@ const Store = {
     return true;
   },
 
-  /** 写入观看进度：同时刷新 lastWatchedAt / updatedAt 并留痕 */
-  updateProgress(id, season, episode, opts) {
+  /** 写入观看进度：同时刷新 lastWatchedAt / updatedAt 并留痕（一季一条，只需集数） */
+  updateProgress(id, episode, opts) {
     const s = this.getShow(id);
     if (!s) return null;
-    s.season = normSeasonEp(season, s.season);
     s.episode = normSeasonEp(episode, s.episode);
     const now = Date.now();
     s.lastWatchedAt = now;
@@ -516,7 +535,7 @@ const Store = {
     if (s.status === 'want') s.status = 'watching';
     this.addWatchLog({
       showId: id, kind: 'progress',
-      season: s.season, episode: s.episode,
+      episode: s.episode,
       note: (opts && opts.note) || '',
     });
     this.save();
@@ -531,7 +550,7 @@ const Store = {
     s.status = status;
     s.updatedAt = Date.now();
     this.addWatchLog({
-      showId: id, kind: 'status', season: s.season, episode: s.episode,
+      showId: id, kind: 'status', episode: s.episode,
       note: `${SHOW_STATUS_META[from] ? SHOW_STATUS_META[from].label : from} → ${SHOW_STATUS_META[status].label}`,
     });
     this.save();
@@ -551,7 +570,7 @@ const Store = {
     s.updatedAt = now;
     s.lastWatchedAt = s.lastWatchedAt || now;
     this.addWatchLog({
-      showId: id, kind: 'finish', season: s.season, episode: s.episode,
+      showId: id, kind: 'finish', episode: s.episode,
       note: '标记为已看完',
     });
     this.save();
@@ -650,17 +669,15 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal
    观影 —— 纯函数（筛选 / 排序 / 分组 / 校验 / 进度运算，可单测）
    ========================================================================= */
 
-/** 校验季 / 集：必须是 ≥1 的整数；若本季总集数已知且集数超出则判无效 */
-function validateSeasonEpisode(season, episode, curEpisodes) {
-  const s = Math.floor(Number(season));
+/** 校验集数：必须是 ≥1 的整数；若本季总集数已知且集数超出则判无效 */
+function validateEpisode(episode, curEpisodes) {
   const e = Math.floor(Number(episode));
-  if (!isFinite(s) || s < 1) return { ok: false, season: null, episode: null, error: '季数需为 ≥1 的整数' };
-  if (!isFinite(e) || e < 1) return { ok: false, season: null, episode: null, error: '集数需为 ≥1 的整数' };
+  if (!isFinite(e) || e < 1) return { ok: false, episode: null, error: '集数需为 ≥1 的整数' };
   const cap = normOptPositiveInt(curEpisodes);
   if (cap != null && e > cap) {
-    return { ok: false, season: s, episode: e, error: `本季共 ${cap} 集，集数不能超过 ${cap}` };
+    return { ok: false, episode: e, error: `本季共 ${cap} 集，集数不能超过 ${cap}` };
   }
-  return { ok: true, season: s, episode: e, error: '' };
+  return { ok: true, episode: e, error: '' };
 }
 
 /** 筛选：状态 + 关键词（匹配标题 / 原名 / 类型 / 简介），两者可叠加 */
@@ -705,52 +722,30 @@ function groupShows(list) {
   return g;
 }
 
-/** 进度 +1：已知本季总集数且为最后一集 → 进下一季；总集数未知则只 +1（不进季、不判断季终） */
+/** 进度 +1：已知本季总集数且已在最后一集 → 停在末集（一季一条，不跨季）；未知则只 +1 */
 function incEpisode(show) {
   if (!show) return null;
   const cap = normOptPositiveInt(show.currentSeasonEpisodes);
-  let season = normSeasonEp(show.season, 1);
-  let episode = normSeasonEp(show.episode, 1);
+  const episode = normSeasonEp(show.episode, 1);
   if (cap != null && episode >= cap) {
-    season += 1;
-    episode = 1;
-    // 进入新一季时，若已知总季数且已超出，则不越界（停留在当前季最后一集）
-    const total = normOptPositiveInt(show.totalSeasons);
-    if (total != null && season > total) {
-      season = total;
-      episode = cap;
-    }
-  } else {
-    episode += 1;
+    return { episode: cap }; // 已到本季末集，不再前进（也不自动标记为已看完）
   }
-  return { season, episode };
+  return { episode: episode + 1 };
 }
 
-/** 进度 -1：episode=1 且 season>1 → 回上一季（集数未知设 1）；带下限保护 */
+/** 进度 -1：带下限保护（第 1 集不再后退） */
 function decEpisode(show) {
   if (!show) return null;
-  let season = normSeasonEp(show.season, 1);
-  let episode = normSeasonEp(show.episode, 1);
-  if (episode > 1) {
-    episode -= 1;
-  } else if (season > 1) {
-    season -= 1;
-    const cap = normOptPositiveInt(show.currentSeasonEpisodes);
-    episode = cap != null ? cap : 1;
-  } else {
-    return { season: 1, episode: 1 }; // 已在最开始
-  }
-  return { season, episode };
+  const episode = normSeasonEp(show.episode, 1);
+  return { episode: episode > 1 ? episode - 1 : 1 };
 }
 
-/** 进度文案：已知本季总集数 → 「第 5 / 10 集」；未知 → 「第 5 集」；非第一季 → 带 S2 前缀 */
+/** 进度文案：已知本季总集数 → 「第 5 / 10 集」；未知 → 「第 5 集」 */
 function showProgressText(show) {
   if (!show) return '';
-  const s = normSeasonEp(show.season, 1);
   const e = normSeasonEp(show.episode, 1);
   const cap = normOptPositiveInt(show.currentSeasonEpisodes);
-  const base = cap != null ? `第 ${e} / ${cap} 集` : `第 ${e} 集`;
-  return s > 1 ? `S${s} · ${base}` : base;
+  return cap != null ? `第 ${e} / ${cap} 集` : `第 ${e} 集`;
 }
 
 /** 进度百分比：总集数未知返回 null（渲染层据此不画进度条） */
@@ -768,10 +763,6 @@ function progressWarn(show) {
   const cap = normOptPositiveInt(show.currentSeasonEpisodes);
   const e = normSeasonEp(show.episode, 1);
   if (cap != null && e > cap) return `集数（${e}）已超出本季总集数（${cap}）`;
-  const total = normOptPositiveInt(show.totalSeasons);
-  if (total != null && normSeasonEp(show.season, 1) > total) {
-    return `季数（${show.season}）已超出总季数（${total}）`;
-  }
   return '';
 }
 
@@ -973,7 +964,9 @@ function coverPlaceholder() {
 function coverImgHtml(show) {
   const alt = escapeHtml(show.title);
   if (show.coverType === 'url' && show.coverUrl) {
-    return `<img class="cover-img" src="${escapeHtml(show.coverUrl)}" alt="${alt}" loading="lazy" data-loaded="1" />`;
+    // 外链海报（如 TVmaze）加载失败时降级为占位图，避免裂图
+    return `<img class="cover-img" src="${escapeHtml(show.coverUrl)}" alt="${alt}" loading="lazy"
+      data-loaded="1" onerror="this.classList.add('cover-failed')" />`;
   }
   if ((show.coverType === 'local' || show.coverType === 'ai') && show.coverKey) {
     return `<img class="cover-img" alt="${alt}" loading="lazy"
@@ -1289,6 +1282,195 @@ function readCoverPicker(scope) {
 }
 
 /* =========================================================================
+   观影 —— TVmaze 搜索（自动填充剧集信息）
+   ---------------------------------------------------------------------
+   设计：搜索结果只「填空」，绝不覆盖用户已写内容；
+   TVmaze 不可用时给出明确提示，且完全不影响手动填写。
+   ========================================================================= */
+
+/** 搜索结果缓存：showId -> 剧集对象（供选季时取回名称等） */
+let showCache = {};
+/** 最近一次搜索结果（供结果区点击时取回剧集对象） */
+let lastSearchResult = [];
+
+/** 搜索区骨架（嵌在剧集表单顶部） */
+function showSearchBlockHtml() {
+  return `
+    <div class="show-search-block" id="showSearchBlock">
+      <label class="field-label">${icon('search')}从 TVmaze 搜索 <span class="opt">选填</span></label>
+      <div class="show-search-row">
+        <input class="input" id="tvmazeQuery" type="text" maxlength="80"
+               placeholder="输入剧名，如 进击的巨人" />
+        <button type="button" class="btn btn-ghost" id="tvmazeSearchBtn">搜索</button>
+      </div>
+      <p class="cover-hint">搜索后选择「第几季」，会自动填入标题、年份、评分、简介与该季海报。只填空项，不会覆盖你已填写的内容。</p>
+      <div class="tvmaze-results" id="tvmazeResults"></div>
+      <div class="tvmaze-seasons" id="tvmazeSeasons" hidden></div>
+      <p class="tvmaze-status" id="tvmazeStatus" hidden></p>
+    </div>`;
+}
+
+/** 设置搜索状态行（loading / error / 提示） */
+function setTvmazeStatus(msg, kind) {
+  const el = document.getElementById('tvmazeStatus');
+  if (!el) return;
+  if (!msg) { el.hidden = true; el.textContent = ''; el.className = 'tvmaze-status'; return; }
+  el.hidden = false;
+  el.textContent = msg;
+  el.className = 'tvmaze-status' + (kind ? ' is-' + kind : '');
+}
+
+/** 渲染搜索结果（剧集列表，点击进入季选择） */
+function renderTvmazeShows(list) {
+  const box = document.getElementById('tvmazeResults');
+  const seasonBox = document.getElementById('tvmazeSeasons');
+  if (!box) return;
+  if (seasonBox) { seasonBox.hidden = true; seasonBox.innerHTML = ''; }
+  if (!list || !list.length) {
+    box.innerHTML = '';
+    setTvmazeStatus('没有找到匹配的剧集，换个关键词或直接手动填写。', 'error');
+    return;
+  }
+  setTvmazeStatus(`找到 ${list.length} 条结果，点选一部剧：`, '');
+  box.innerHTML = list.map((s) => `
+    <div class="tvmaze-result" data-show-id="${escapeHtml(s.id)}" title="${escapeHtml(s.name)}">
+      ${s.image
+        ? `<img src="${escapeHtml(s.image)}" alt="${escapeHtml(s.name)}" loading="lazy" />`
+        : `<div class="tvmaze-noimg">${icon('film')}</div>`}
+      <div class="tvmaze-result-name">${escapeHtml(s.name)}</div>
+      <div class="tvmaze-result-meta">${s.year != null ? s.year : ''}${s.rating != null ? ' · ★' + s.rating : ''}</div>
+    </div>`).join('');
+}
+
+/** 渲染某剧的季列表（点选后填充表单） */
+function renderTvmazeSeasons(list, show) {
+  const box = document.getElementById('tvmazeSeasons');
+  if (!box) return;
+  if (!list || !list.length) {
+    box.hidden = true;
+    setTvmazeStatus('这部剧没有可用的季信息，请手动填写。', 'error');
+    return;
+  }
+  box.hidden = false;
+  setTvmazeStatus(`《${show.name}》共 ${list.length} 季，点选你要添加的那一季：`, '');
+  box.innerHTML = list.map((s) => `
+    <button type="button" class="tvmaze-season" data-season-number="${s.number}">
+      ${s.image ? `<img src="${escapeHtml(s.image)}" alt="${escapeHtml(s.label)}" loading="lazy" />` : ''}
+      <span class="tvmaze-season-label">${escapeHtml(s.label)}</span>
+      <span class="tvmaze-season-ep">${escapeHtml(s.epText)}</span>
+    </button>`).join('');
+}
+
+/** 内部：搜索框取词并查询剧集 */
+function doTvmazeSearch() {
+  const input = document.getElementById('tvmazeQuery');
+  const q = input ? input.value.trim() : '';
+  if (!q) { toast('请输入剧名', 'err'); if (input) input.focus(); return; }
+  setTvmazeStatus('搜索中…', 'loading');
+  const box = document.getElementById('tvmazeResults');
+  const seasonBox = document.getElementById('tvmazeSeasons');
+  if (box) box.innerHTML = '';
+  if (seasonBox) { seasonBox.hidden = true; seasonBox.innerHTML = ''; }
+  tvmazeSearchShows(q).then((list) => {
+    if (!document.getElementById('tvmazeResults')) return;  // 弹窗已关闭
+    lastSearchResult = list;
+    showCache = {};
+    list.forEach((s) => { showCache[s.id] = s; });
+    renderTvmazeShows(list);
+  }).catch(() => {
+    setTvmazeStatus('TVmaze 暂时不可用，请手动填写。', 'error');
+  });
+}
+
+/** 内部：选中某剧 → 拉取其季列表 */
+function pickTvmazeShow(showId) {
+  const box = document.getElementById('tvmazeResults');
+  if (!box) return;
+  const all = Array.prototype.slice.call(box.querySelectorAll('.tvmaze-result'));
+  all.forEach((n) => { n.classList.toggle('active', n.dataset.showId === String(showId)); });
+  setTvmazeStatus('正在获取季列表…', 'loading');
+  const show = showCache[String(showId)];
+  tvmazeGetSeasons(showId).then((seasons) => {
+    if (!document.getElementById('tvmazeResults')) return;  // 弹窗已关闭
+    renderTvmazeSeasons(seasons, show || { name: '所选剧集' });
+  }).catch(() => {
+    setTvmazeStatus('获取季列表失败，请手动填写。', 'error');
+  });
+}
+
+/** 内部：选中某季 → 按「只填空」写入表单 */
+function pickTvmazeSeason(showId, seasonNumber) {
+  const show = showCache[String(showId)];
+  if (!show) { setTvmazeStatus('剧集信息已失效，请重新搜索。', 'error'); return; }
+  const num = normOptPositiveInt(seasonNumber);
+  if (num == null) return;
+  tvmazeGetSeasons(showId).then((seasons) => {
+    const season = seasons.filter((s) => s.number === num)[0];
+    if (!season) { setTvmazeStatus('未找到该季信息。', 'error'); return; }
+    const fields = tvmazeSeasonToFields(show, season);
+    const filled = applyTvmazeFields(fields, coverPickerState);
+    // 封面若被写入，同步界面到「图片链接」页签
+    if (filled.indexOf('封面') > -1) syncCoverPickerToState();
+    toast(filled.length
+      ? `已填入：${filled.join('、')}`
+      : '表单已有内容，未作改动（搜索只填空项）');
+    setTvmazeStatus(filled.length ? '已填入所选季的信息。' : '表单已填写完整，无需补充。', '');
+  }).catch(() => {
+    setTvmazeStatus('获取季信息失败，请手动填写。', 'error');
+  });
+}
+
+/** 绑定搜索区事件（在弹窗打开后调用） */
+function bindShowSearch() {
+  showCache = {};
+  setTvmazeStatus('');
+  const btn = document.getElementById('tvmazeSearchBtn');
+  const input = document.getElementById('tvmazeQuery');
+  const results = document.getElementById('tvmazeResults');
+  const seasons = document.getElementById('tvmazeSeasons');
+  if (btn) btn.addEventListener('click', doTvmazeSearch);
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); doTvmazeSearch(); }
+    });
+  }
+  // 结果区先记下剧集数据，供选季时使用
+  if (results) {
+    results.addEventListener('click', (e) => {
+      const node = e.target && e.target.closest ? e.target.closest('.tvmaze-result') : null;
+      if (!node) return;
+      pickTvmazeShow(node.dataset.showId);
+    });
+  }
+  if (seasons) {
+    seasons.addEventListener('click', (e) => {
+      const node = e.target && e.target.closest ? e.target.closest('.tvmaze-season') : null;
+      if (!node) return;
+      const activeShow = document.querySelector('#tvmazeResults .tvmaze-result.active');
+      if (!activeShow) return;
+      pickTvmazeSeason(activeShow.dataset.showId, node.dataset.seasonNumber);
+    });
+  }
+}
+
+/** 把「图片链接」封面同步到界面（applyTvmazeFields 改了状态后调用） */
+function syncCoverPickerToState() {
+  const picker = document.getElementById('coverPicker');
+  if (!picker) return;
+  if (coverPickerState.type !== 'url') return;
+  const tab = picker.querySelector('[data-cover-tab="url"]');
+  if (tab) {
+    picker.querySelectorAll('.cover-pane').forEach((p) => { p.hidden = p.dataset.coverPane !== 'url'; });
+    picker.querySelectorAll('.cover-tab').forEach((x) => x.classList.toggle('active', x === tab));
+  }
+  const urlInput = document.getElementById('coverUrlInput');
+  if (urlInput && !urlInput.value) {
+    urlInput.value = coverPickerState.url || '';
+    urlInput.dispatchEvent(new Event('input'));
+  }
+}
+
+/* =========================================================================
    观影 —— 表单弹窗
    ========================================================================= */
 function showFormHtml(s) {
@@ -1300,6 +1482,7 @@ function showFormHtml(s) {
   return `
     <h3>${icon('clapperboard')}${v.id ? '编辑剧集' : '添加剧集'}</h3>
     <div class="show-form">
+      ${showSearchBlockHtml()}
       <div class="form-row">
         <div class="form-field">
           <label class="field-label">标题 <em>*</em></label>
@@ -1337,19 +1520,10 @@ function showFormHtml(s) {
           <div class="segs segs-status" id="showStatusSegs">${statusSegs}</div>
         </div>
       </div>
-      <div class="form-row form-row-4">
-        <div class="form-field">
-          <label class="field-label">第几季</label>
-          <input class="input" id="showSeason" type="number" min="1" step="1" value="${v.season || 1}" />
-        </div>
+      <div class="form-row">
         <div class="form-field">
           <label class="field-label">第几集</label>
           <input class="input" id="showEpisode" type="number" min="1" step="1" value="${v.episode || 1}" />
-        </div>
-        <div class="form-field">
-          <label class="field-label">总季数</label>
-          <input class="input" id="showTotalSeasons" type="number" min="1" step="1"
-                 placeholder="未知留空" value="${v.totalSeasons != null ? v.totalSeasons : ''}" />
         </div>
         <div class="form-field">
           <label class="field-label">本季总集数</label>
@@ -1386,9 +1560,7 @@ function readShowForm() {
     year: g('showYear'),
     genre: g('showGenre').trim(),
     status: activeStatus ? activeStatus.dataset.status : 'want',
-    season: g('showSeason'),
     episode: g('showEpisode'),
-    totalSeasons: g('showTotalSeasons'),
     currentSeasonEpisodes: g('showSeasonEpisodes'),
     summary: g('showSummary').trim(),
     note: g('showNote').trim(),
@@ -1415,6 +1587,7 @@ function openAddShowModal() {
   openModal(showFormHtml(null));
   bindStatusSegs();
   bindCoverPicker();
+  bindShowSearch();
   const t = $('#showTitle');
   if (t) t.focus();
   $('#modalCancel').addEventListener('click', closeModal);
@@ -1436,6 +1609,7 @@ function openEditShowModal(id) {
   openModal(showFormHtml(s));
   bindStatusSegs();
   bindCoverPicker();
+  bindShowSearch();
   hydrateCoverPicker();   // 回显已有本地封面（否则编辑时本地面板一片空白）
   $('#modalCancel').addEventListener('click', closeModal);
   $('#modalOk').addEventListener('click', () => {
@@ -1445,8 +1619,8 @@ function openEditShowModal(id) {
     const oldKey = s.coverKey;
     Store.updateShow(id, {
       title: f.title, originalTitle: f.originalTitle, year: f.year, genre: f.genre,
-      status: f.status, season: f.season, episode: f.episode,
-      totalSeasons: f.totalSeasons, currentSeasonEpisodes: f.currentSeasonEpisodes,
+      status: f.status, episode: f.episode,
+      currentSeasonEpisodes: f.currentSeasonEpisodes,
       summary: f.summary, note: f.note, rating: f.rating,
       coverType: f.coverType, coverUrl: f.coverUrl, coverKey: f.coverKey,
       lastWatchedAt: s.lastWatchedAt, finishedAt: s.finishedAt,
@@ -1467,10 +1641,6 @@ function openProgressModal(id) {
     <p>《${escapeHtml(s.title)}》当前：${escapeHtml(showProgressText(s))}</p>
     <div class="form-row">
       <div class="form-field">
-        <label class="field-label">第几季</label>
-        <input class="input" id="progressSeasonInput" type="number" min="1" step="1" value="${s.season}" />
-      </div>
-      <div class="form-field">
         <label class="field-label">第几集</label>
         <input class="input" id="progressEpisodeInput" type="number" min="1" step="1" value="${s.episode}" />
       </div>
@@ -1484,17 +1654,16 @@ function openProgressModal(id) {
       <button class="btn btn-primary" id="modalOk">保存进度</button>
     </div>
   `);
-  const si = $('#progressSeasonInput');
   const ei = $('#progressEpisodeInput');
-  if (si) si.focus();
+  if (ei) ei.focus();
   $('#modalCancel').addEventListener('click', closeModal);
   $('#modalOk').addEventListener('click', () => {
-    const check = validateSeasonEpisode(si.value, ei.value, s.currentSeasonEpisodes);
+    const check = validateEpisode(ei.value, s.currentSeasonEpisodes);
     if (!check.ok) { toast(check.error, 'err'); return; }
     const noteEl = $('#progressNoteInput');
-    Store.updateProgress(id, check.season, check.episode, { note: noteEl ? noteEl.value.trim() : '' });
+    Store.updateProgress(id, check.episode, { note: noteEl ? noteEl.value.trim() : '' });
     closeModal();
-    toast(`进度更新为 ${check.season > 1 ? 'S' + check.season + ' ' : ''}第 ${check.episode} 集`);
+    toast(`进度更新为 第 ${check.episode} 集`);
     renderShows();
   });
 }
@@ -1568,7 +1737,6 @@ function openShowDetail(id) {
   const meta = [
     s.year ? ['上映年份', String(s.year)] : null,
     s.genre ? ['类型', s.genre] : null,
-    s.totalSeasons != null ? ['总季数', String(s.totalSeasons)] : null,
     s.currentSeasonEpisodes != null ? ['本季集数', String(s.currentSeasonEpisodes)] : null,
     s.rating != null ? ['评分', String(s.rating)] : null,
     s.finishedAt ? ['看完于', s.finishedAt] : null,
@@ -1585,7 +1753,7 @@ function openShowDetail(id) {
           const ts = `${when.getFullYear()}/${pad2(when.getMonth() + 1)}/${pad2(when.getDate())} ${pad2(when.getHours())}:${pad2(when.getMinutes())}`;
           let desc = l.note;
           if (!desc) {
-            if (l.kind === 'progress') desc = `${l.season > 1 ? 'S' + l.season + ' ' : ''}第 ${l.episode} 集`;
+            if (l.kind === 'progress') desc = `第 ${l.episode} 集`;
             else if (l.kind === 'finish') desc = '标记为已看完';
             else desc = '状态变更';
           }
@@ -1649,7 +1817,7 @@ function handleIncEpisode(id) {
   const s = Store.getShow(id);
   if (!s) return;
   const r = incEpisode(s);
-  Store.updateProgress(id, r.season, r.episode);
+  Store.updateProgress(id, r.episode);
   toast(`进度：${showProgressText(Store.getShow(id))}`);
   renderShows();
 }
@@ -1657,7 +1825,7 @@ function handleDecEpisode(id) {
   const s = Store.getShow(id);
   if (!s) return;
   const r = decEpisode(s);
-  Store.updateProgress(id, r.season, r.episode);
+  Store.updateProgress(id, r.episode);
   toast(`进度：${showProgressText(Store.getShow(id))}`);
   renderShows();
 }
