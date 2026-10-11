@@ -76,25 +76,30 @@ test('需求1 环形仪表盘尺寸加大', (w) => {
   ok(!!wrap, '页面中存在环形仪表盘容器');
 });
 
-/* ---------- 需求 2：统计页可记账 ---------- */
-test('需求2 统计页具备记账功能', (w) => {
+/* ---------- 需求 2：统计页专注分析（不再内嵌记账表单） ---------- */
+test('需求2 统计页只做分析，入口统一到记账页', (w) => {
   // 切到统计页
   click(w, w.document.querySelector('.nav-item[data-page="stats"]'));
   const statsPage = w.document.querySelector('#page-stats');
-  const form = statsPage.querySelector('form.entry-form');
-  ok(!!form, '统计页内存在记账表单');
+  ok(!!statsPage.classList.contains('active'), '成功切换到统计页');
 
-  // 在统计页记一笔支出，验证写入
+  // 统计页不应再内嵌记账表单，也不应有支出/收入页签
+  ok(!statsPage.querySelector('form.entry-form'), '统计页已移除快捷记账表单');
+  ok(statsPage.querySelectorAll('.tab').length === 0, '统计页已移除支出/收入切换页签');
+
+  // 分析模块仍然完整
+  ok(!!w.document.querySelector('#donutSvg'), '统计页保留分类占比环形图');
+  ok(!!w.document.querySelector('#statsRank'), '统计页保留分类支出排行');
+  ok(!!w.document.querySelector('#statsTrend'), '统计页保留近 7 日收支趋势');
+
+  // 记账入口统一在记账页，且功能正常（跨页写库不漏）
+  const ledgerForm = w.document.querySelector('#page-ledger form.entry-form');
+  ok(!!ledgerForm, '记账页记账表单仍在');
   const before = w.eval('JSON.parse(localStorage.getItem("life_assistant_v1")).transactions.length');
-  const amt = statsPage.querySelector('form.entry-form input[type="number"]');
-  amt.value = '9.5';
-  submit(w, form);
+  ledgerForm.querySelector('.f-amount').value = '9.5';
+  submit(w, ledgerForm);
   const after = w.eval('JSON.parse(localStorage.getItem("life_assistant_v1")).transactions.length');
-  ok(after === before + 1, '在统计页提交后新增了一笔记录');
-
-  // 统计页点击支出/收入页签仍有效
-  const tabs = statsPage.querySelectorAll('.tab');
-  ok(tabs.length >= 2, '统计页有支出/收入切换页签');
+  ok(after === before + 1, '记账页提交后新增了一笔记录');
 });
 
 /* ---------- 需求 3：分类调整 ---------- */

@@ -209,53 +209,6 @@
           </div>
         </div>
 
-        <!-- 快捷记账（与记账页共用同一套逻辑） -->
-        <div class="card">
-          <h2 class="card-title" style="margin-bottom:14px"><i data-lucide="plus-circle"></i>快捷记账</h2>
-          <div class="tabs">
-            <button class="tab active" data-type="expense"><i data-lucide="arrow-up-right"></i>支出</button>
-            <button class="tab" data-type="income"><i data-lucide="arrow-down-left"></i>收入</button>
-          </div>
-
-          <form class="entry-form" autocomplete="off">
-            <div class="form-field">
-              <label class="field-label"><i data-lucide="banknote"></i>金额</label>
-              <div class="amount-field" data-amount-wrap>
-                <span class="cur">¥</span>
-                <input type="number" class="f-amount" step="0.01" min="0" placeholder="0.00" required />
-              </div>
-            </div>
-
-            <div class="form-field row-category">
-              <span class="field-label"><i data-lucide="shapes"></i>分类</span>
-              <div class="cat-picker" data-cat-picker></div>
-              <select class="f-category fallback-native" tabindex="-1" aria-hidden="true"></select>
-            </div>
-
-            <div class="form-field">
-              <span class="field-label label-account"><i data-lucide="credit-card"></i>扣款账户</span>
-              <div class="segmented segs-account"></div>
-            </div>
-
-            <div class="form-field">
-              <label class="field-label"><i data-lucide="calendar"></i>日期</label>
-              <div class="date-field">
-                <input type="date" class="f-date input" />
-                <i data-lucide="calendar-days"></i>
-              </div>
-            </div>
-
-            <div class="form-field">
-              <label class="field-label"><i data-lucide="message-square-text"></i>备注 <span class="opt">选填</span></label>
-              <input type="text" class="f-remark input" placeholder="记录一下这笔花在哪" />
-            </div>
-
-            <button type="submit" class="btn btn-primary submit-btn">
-              <i data-lucide="check"></i><span>记录支出</span>
-            </button>
-          </form>
-        </div>
-
         <div class="card">
           <div class="list-head"><h2><i data-lucide="receipt-text"></i>当日账单</h2></div>
           <ul class="bill-list" id="statsBillList"></ul>
