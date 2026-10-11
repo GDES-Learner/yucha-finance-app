@@ -611,8 +611,31 @@ function toast(msg, kind) {
 }
 
 /* ---------------------- 弹窗 ---------------------- */
+/**
+ * 打开弹窗。自动把内容切成「可滚动主体 + 底部固定操作区」，
+ * 保证内容过长时提交按钮永远可见（不会溢出到屏幕外）。
+ * 规则：DOM 中最后一个 .modal-actions 会被移出滚动区固定在底部。
+ */
 function openModal(html) {
-  $('#modal').innerHTML = html;
+  const modal = $('#modal');
+  modal.innerHTML = html;
+
+  try {
+    // 已手动包过或无需处理时直接跳过
+    if (!modal.querySelector('.modal-scroll') && typeof window !== 'undefined' && window.DOMParser) {
+      const actions = modal.querySelector('.modal-actions');
+      const scroll = document.createElement('div');
+      scroll.className = 'modal-scroll';
+      // 把所有「非底部操作区」的节点移入滚动区，操作区留在外层固定
+      Array.prototype.slice.call(modal.childNodes).forEach((node) => {
+        if (node !== actions) scroll.appendChild(node);
+      });
+      modal.appendChild(scroll);
+    }
+  } catch (e) {
+    // 结构处理失败不影响弹窗正常显示
+  }
+
   $('#modalMask').classList.add('show');
   refreshIcons($('#modal'));
 }
@@ -764,7 +787,12 @@ let coverDbInstance = null;       // 打开后的 IDBDatabase 单例
 let coverDbFailed = false;        // 打开失败后不再重试
 const coverMemStore = new Map();  // 降级存储：key -> Blob/File
 const coverUrlCache = new Map();  // key -> objectURL（避免重复创建导致泄漏）
-let coverToken = 0;               // 渲染轮次标记，用于异步回填防竞态
+/**
+ * 渲染轮次标记，用于异步回填防竞态。
+ * 按 root（DOM 子树）分别计数：页面网格与弹窗是两个独立会话，
+ * 各自递增互不干扰，避免「后发起的 hydrate 把先发起的回调判定为过期而丢弃」。
+ */
+const coverTokens = new WeakMap();
 
 /** 同步探测当前环境是否具备 IndexedDB */
 function coverDbAvailable() {
@@ -909,13 +937,14 @@ function saveCoverFile(file) {
 /** 异步回填本地封面：扫描 [data-cover-type="local"|"ai"][data-cover-key] 并设置 src */
 function hydrateCovers(root) {
   if (!root) return;
-  const token = ++coverToken;
+  const token = (coverTokens.get(root) || 0) + 1;
+  coverTokens.set(root, token);
   const nodes = root.querySelectorAll('[data-cover-type="local"][data-cover-key], [data-cover-type="ai"][data-cover-key]');
   Array.prototype.forEach.call(nodes, (img) => {
     const key = img.getAttribute('data-cover-key');
     if (!key) return;
     const apply = (url) => {
-      if (coverToken !== token) return;        // 已被新一轮渲染取代，丢弃
+      if (coverTokens.get(root) !== token) return;  // 仅同一 root 的新一轮渲染才丢弃
       if (!url) { img.classList.add('cover-failed'); return; }
       img.src = url;
       img.setAttribute('data-loaded', '1');
@@ -1206,10 +1235,37 @@ function bindCoverPicker() {
       const url = await coverGetURL(r.key);
       localPreview.innerHTML = url
         ? `<img src="${escapeHtml(url)}" alt="封面预览" />`
-        : `<span class="cover-hint muted">图片已保存到本机（当前环境无法预览）</span>`;
+        : `<span class="cover-hint muted">${icon('check')}图片已保存到本机（当前环境无法预览）</span>`;
       toast('封面已选择');
     });
   }
+}
+
+/**
+ * 把「已有的」本地封面回显到 #coverLocalPreview（编辑弹窗打开时用）。
+ * 异步读取，不阻塞弹窗打开；命中缓存则同步渲染避免闪烁。
+ */
+function hydrateCoverPicker() {
+  const preview = document.getElementById('coverLocalPreview');
+  if (!preview) return;
+  const key = coverPickerState.key;
+  if (!key) { preview.innerHTML = ''; return; }
+  // 命中缓存：同步渲染，避免先空一帧再出图
+  if (coverUrlCache.has(key)) {
+    preview.innerHTML = `<img src="${escapeHtml(coverUrlCache.get(key))}" alt="封面预览" />`;
+    return;
+  }
+  coverGetURL(key).then((url) => {
+    // 弹窗可能已被关闭 / 被新一轮 openModal 替换，节点脱离文档就丢弃
+    if (!preview.isConnected) return;
+    preview.innerHTML = url
+      ? `<img src="${escapeHtml(url)}" alt="封面预览" />`
+      : `<span class="cover-hint muted">${icon('check')}封面已保存在本机（当前环境无法预览）</span>`;
+  }).catch(() => {
+    if (preview.isConnected) {
+      preview.innerHTML = `<span class="cover-hint muted">${icon('check')}封面已保存在本机</span>`;
+    }
+  });
 }
 
 /** 从弹窗 DOM 读取封面选择结果 */
@@ -1380,6 +1436,7 @@ function openEditShowModal(id) {
   openModal(showFormHtml(s));
   bindStatusSegs();
   bindCoverPicker();
+  hydrateCoverPicker();   // 回显已有本地封面（否则编辑时本地面板一片空白）
   $('#modalCancel').addEventListener('click', closeModal);
   $('#modalOk').addEventListener('click', () => {
     const f = readShowForm();

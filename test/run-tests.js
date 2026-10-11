@@ -47,8 +47,12 @@ function boot() {
     'openProgressModal, initShowsPage, ' +
     'COVER_DB_NAME, COVER_STORE, coverDbAvailable, coverSave, coverGet, coverDelete, ' +
     'coverGetURL, hydrateCovers, saveCoverFile, revokeCoverURL, ' +
+    'coverTokens, coverUrlCache, coverPickerHtml, readCoverPicker, hydrateCoverPicker, ' +
     'CLOUD_PUBLIC_CONFIG, CLOUD_TABLE, ensureCloudClient, isCloudSignedIn, renderSyncEntry, ' +
     'renderCloudCard, openLoginModal, cloudPush, cloudPull, scheduleAutoPush, escapeHtml };\n' +
+    // coverPickerState 是被整体重新赋值的 let 变量，直接放进对象会快照化，
+    // 因此用 getter 暴露实时值
+    'Object.defineProperty(window.__app, "coverPickerState", { get: function(){ return coverPickerState; } });\n' +
     '})();';
   window.eval(instrumented);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
@@ -1561,6 +1565,145 @@ test('观影H 云端拉取后 renderShows 可正常降级渲染（无本机图�
   ok(!threw, 'renderShows 不抛错');
   ok(!!w.document.querySelector('.poster-card[data-id="cloud1"]'), '卡片正常渲染');
   ok(!!w.document.querySelector('.cover-ph') || !!w.document.querySelector('[data-cover-key]'), '缺图走占位或延迟回填');
+});
+
+/* =========================================================================
+   观影模块 —— I 编辑封面回显 / hydrate 会话隔离（本次修复）
+   ========================================================================= */
+test('观影I 编辑时已有本地封面会回显（不再空白）', async (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const s = app.Store.addShow({ title: '回显剧' });
+  app.Store.updateShow(s.id, { coverType: 'local', coverKey: 'img_echo' });
+
+  app.openEditShowModal(s.id);
+  // 等异步回显完成（jsdom 无 objectURL，会走降级分支）
+  await new Promise((r) => setTimeout(r, 20));
+
+  const preview = w.document.getElementById('coverLocalPreview');
+  ok(!!preview, '存在本地面板预览容器');
+  ok(preview.innerHTML.length > 0, '编辑时本地面板不再空白');
+  ok(/本机/.test(preview.textContent), '无法预览时给出「已保存在本机」的明确提示');
+  const localTab = w.document.querySelector('#coverPicker .cover-tab[data-cover-tab="local"]');
+  ok(localTab.classList.contains('active'), '本地上传 tab 处于高亮');
+});
+
+test('观影I hydrateCoverPicker 命中缓存时同步回显', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const s = app.Store.addShow({ title: '缓存剧' });
+  app.Store.updateShow(s.id, { coverType: 'local', coverKey: 'img_cached' });
+  app.coverUrlCache.set('img_cached', 'blob:mock-url');
+
+  app.openEditShowModal(s.id);
+  // 同步分支：无需 await
+  const img = w.document.querySelector('#coverLocalPreview img');
+  ok(!!img, '命中缓存时同步渲染出图片');
+  ok(img.getAttribute('src') === 'blob:mock-url', '图片 src 等于缓存中的 objectURL');
+});
+
+test('观影I hydrateCoverPicker 空 key 不渲染且不抛错', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  let threw = false;
+  try {
+    app.openAddShowModal(); // 新增时无封面 key
+  } catch (e) { threw = true; }
+  ok(!threw, '新增弹窗打开不抛错');
+  const preview = w.document.getElementById('coverLocalPreview');
+  ok(preview && preview.innerHTML === '', '无封面时本地面板保持为空');
+});
+
+test('观影I 编辑 URL 封面：链接面板回填、本地面板为空', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const s = app.Store.addShow({ title: '链接封面剧' });
+  app.Store.updateShow(s.id, { coverType: 'url', coverUrl: 'https://example.com/p.jpg' });
+
+  app.openEditShowModal(s.id);
+  ok(w.document.getElementById('coverUrlInput').value === 'https://example.com/p.jpg', '链接输入框回填原链接');
+  ok(w.document.getElementById('coverLocalPreview').innerHTML === '', 'URL 型封面时本地面板为空');
+  const urlTab = w.document.querySelector('#coverPicker .cover-tab[data-cover-tab="url"]');
+  ok(urlTab.classList.contains('active'), '图片链接 tab 高亮');
+});
+
+test('观影I 网格与弹窗的 hydrate 会话互不冲刷', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  ['甲', '乙', '丙'].forEach((t, i) => {
+    const s = app.Store.addShow({ title: t, status: 'watching' });
+    app.Store.updateShow(s.id, { coverType: 'local', coverKey: 'img_' + i });
+  });
+  app.switchPage('shows');
+  const gridRoot = w.document.getElementById('showsSections');
+  const tokenBefore = app.coverTokens.get(gridRoot);
+  ok(typeof tokenBefore === 'number', '网格 root 已记录 token');
+
+  // 打开详情弹窗（另一个 hydrate 会话，root = #modal）
+  const first = app.Store.getShows()[0];
+  app.openShowDetail(first.id);
+
+  ok(app.coverTokens.get(gridRoot) === tokenBefore, '弹窗 hydrate 未改动网格的 token（会话隔离）');
+  ok(typeof app.coverTokens.get(w.document.getElementById('modal')) === 'number', '弹窗 root 拥有独立 token');
+
+  // 再次 renderShows 才会递增网格自己的 token
+  app.renderShows();
+  ok(app.coverTokens.get(gridRoot) === tokenBefore + 1, '同一 root 再渲染时 token 正常递增（防竞态能力保留）');
+});
+
+test('观影I 编辑时不改封面 → 保留旧 key 且不删除', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const s = app.Store.addShow({ title: '原名', status: 'watching' });
+  app.Store.updateShow(s.id, { coverType: 'local', coverKey: 'img_keep' });
+
+  app.openEditShowModal(s.id);
+  w.document.getElementById('showTitle').value = '改后的名字';
+  click(w, w.document.getElementById('modalOk'));
+
+  const after = app.Store.getShow(s.id);
+  ok(after.title === '改后的名字', '名字已更新');
+  ok(after.coverKey === 'img_keep', '未动封面时保留原 coverKey');
+  ok(after.coverType === 'local', '封面类型保持 local');
+});
+
+test('观影I 编辑时切到链接 tab → 采用 URL 且清空 key', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const s = app.Store.addShow({ title: '换链接剧' });
+  app.Store.updateShow(s.id, { coverType: 'local', coverKey: 'img_old' });
+
+  app.openEditShowModal(s.id);
+  click(w, w.document.querySelector('#coverPicker .cover-tab[data-cover-tab="url"]'));
+  const input = w.document.getElementById('coverUrlInput');
+  input.value = 'https://example.com/new.jpg';
+  input.dispatchEvent(new w.Event('input', { bubbles: true }));
+  click(w, w.document.getElementById('modalOk'));
+
+  const after = app.Store.getShow(s.id);
+  ok(after.coverType === 'url', '封面类型切换为 url');
+  ok(after.coverUrl === 'https://example.com/new.jpg', '新链接已保存');
+  ok(after.coverKey === '', 'key 已清空');
+});
+
+test('观影I 切 tab 往返不清 key（防止误删旧封面）', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const s = app.Store.addShow({ title: '往返剧' });
+  app.Store.updateShow(s.id, { coverType: 'local', coverKey: 'img_roundtrip' });
+
+  app.openEditShowModal(s.id);
+  // url → none → local 往返切换
+  click(w, w.document.querySelector('#coverPicker .cover-tab[data-cover-tab="url"]'));
+  click(w, w.document.querySelector('#coverPicker .cover-tab[data-cover-tab="none"]'));
+  click(w, w.document.querySelector('#coverPicker .cover-tab[data-cover-tab="local"]'));
+
+  const r = app.readCoverPicker(w.document);
+  ok(r.coverType === 'local', '切回本地面板后类型仍为 local');
+  ok(r.coverKey === 'img_roundtrip', '原 key 未被清空，避免误删封面');
+
+  click(w, w.document.getElementById('modalOk'));
+  ok(app.Store.getShow(s.id).coverKey === 'img_roundtrip', '保存后封面保留');
 });
 
 /* =========================================================================

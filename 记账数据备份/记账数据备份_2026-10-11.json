@@ -1,0 +1,64 @@
+{
+  "app": "life-assistant",
+  "exportedAt": "2026-10-11T12:21:56.865Z",
+  "data": {
+    "transactions": [
+      {
+        "id": "mv391ky45xwryh",
+        "type": "expense",
+        "amount": 13.47,
+        "category": "其它",
+        "account": "alipay",
+        "remark": "美国礼品卡",
+        "date": "2026-10-11",
+        "createdAt": 1791688451404,
+        "counted": true
+      },
+      {
+        "id": "mv3drlhzple11o",
+        "type": "expense",
+        "amount": 21.5,
+        "category": "吃饭",
+        "account": "bank",
+        "remark": "",
+        "date": "2026-10-11",
+        "counted": true,
+        "createdAt": 1791696383639
+      },
+      {
+        "id": "mv3drvkj4yo7c8",
+        "type": "expense",
+        "amount": 3.5,
+        "category": "奶茶",
+        "account": "wechat",
+        "remark": "",
+        "date": "2026-10-11",
+        "counted": true,
+        "createdAt": 1791696396691
+      },
+      {
+        "id": "mv3rdc87s6axlc",
+        "type": "expense",
+        "amount": 21.3,
+        "category": "吃饭",
+        "account": "wechat",
+        "remark": "",
+        "date": "2026-10-11",
+        "counted": true,
+        "createdAt": 1791719233063
+      }
+    ],
+    "budgets": {
+      "2026-10": 1000
+    },
+    "vault": {
+      "wechat_change": 866.2,
+      "wechat_lct": 1385,
+      "alipay": 8699.53,
+      "bank": 1023.5
+    },
+    "customNav": [],
+    "version": 3,
+    "appName": "鱼叉的专属app"
+  }
+}

@@ -948,6 +948,10 @@ select.f-category.fallback-native {
   border-radius: var(--r-xl);
   padding: var(--sp-6);
   width: 100%; max-width: 400px;
+  /* 内容过高时：弹窗最高不超过视口，内部滚动，底部操作按钮始终可见 */
+  max-height: calc(100vh - var(--sp-5) * 2);
+  display: flex; flex-direction: column;
+  overflow: hidden;
   box-shadow: 0 24px 64px rgba(10, 30, 22, .26), inset 0 1px 0 var(--glass-edge);
   animation: modal-pop var(--dur-base) var(--ease-spring);
 }
@@ -955,6 +959,16 @@ select.f-category.fallback-native {
   from { opacity: 0; transform: scale(0.94) translateY(8px); }
   to   { opacity: 1; transform: none; }
 }
+/* 弹窗主体滚动区：标题 / 说明 / 表单随内容滚动，操作区固定 */
+.modal-scroll {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  /* 抵消父级 padding，让滚动条贴边、内容仍保持内边距 */
+  margin: calc(var(--sp-6) * -1);
+  padding: var(--sp-6);
+}
+/* 无 .modal-scroll 包装的旧弹窗保持原行为 */
+.modal:not(:has(.modal-scroll)) { overflow-y: auto; }
 .modal h3 {
   font-size: var(--fs-h2); font-weight: 680; letter-spacing: -.2px;
   margin-bottom: 6px;
@@ -1572,6 +1586,13 @@ select.f-category.fallback-native {
   border-radius: var(--r-sm); box-shadow: var(--shadow-sm);
   background: var(--ink-50);
 }
+/* 无法生成预览时的降级文案：居中显示，明确告知图片仍在 */
+.cover-preview .cover-hint {
+  text-align: center; margin: 0; padding: 10px 12px;
+  background: var(--surface-2); border-radius: var(--r-sm);
+  border: 1px dashed rgba(16, 40, 30, .14);
+}
+.cover-preview .cover-hint .icon { color: var(--brand-500); }
 .cover-drop {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   padding: 22px; cursor: pointer;
