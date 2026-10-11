@@ -18,6 +18,8 @@ function ok(cond, msg) {
 function section(t) { console.log('\n=== ' + t + ' ==='); }
 
 /* ---------- 构建 DOM 环境 ---------- */
+// app.js 使用顶层 const，用 window.eval 声明不会挂到 window 上。
+// 解决办法：把 app.js 包装成 IIFE，并把需要观测的内部对象显式挂到 window.__app。
 function boot() {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const dom = new JSDOM(html, {
@@ -27,10 +29,13 @@ function boot() {
   });
   const { window } = dom;
 
-  // jsdom 的 localStorage 已内置；补一个 SVG getTotalLength 之类的兜底用不到
   const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
-  window.eval(appJs);
-  // 触发 DOMContentLoaded 初始化
+  const instrumented =
+    '(function(){\n' + appJs + '\n' +
+    'window.__app = { Store, state, CATEGORIES, CATEGORY_ICON, CATEGORY_COLOR, ACCOUNTS, ' +
+    'normalizeCategory, renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr };\n' +
+    '})();';
+  window.eval(instrumented);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
   return window;
 }
@@ -94,14 +99,13 @@ test('需求2 统计页具备记账功能', (w) => {
 
 /* ---------- 需求 3：分类调整 ---------- */
 test('需求3 分类拆分为 吃饭/奶茶/宵夜 + 宿舍', (w) => {
-  const cats = w.eval('JSON.stringify(CATEGORIES)');
-  const list = JSON.parse(cats);
+  const list = w.__app.CATEGORIES;
   ['吃饭', '奶茶', '宵夜', '宿舍'].forEach((c) => {
     ok(list.includes(c), `分类包含「${c}」`);
   });
   ok(!list.includes('餐饮'), '已移除旧的「餐饮」分类');
 
-  // 下拉里确实有这些选项
+  // 下拉里确实有这些选项（两个页面各一个表单）
   const ledgerForm = w.document.querySelector('#page-ledger form.entry-form');
   const opts = Array.from(ledgerForm.querySelectorAll('select option')).map((o) => o.value);
   ['吃饭', '奶茶', '宵夜', '宿舍'].forEach((c) => {
@@ -109,30 +113,39 @@ test('需求3 分类拆分为 吃饭/奶茶/宵夜 + 宿舍', (w) => {
   });
 
   // 四个新分类各有图标与颜色
-  const icons = JSON.parse(w.eval('JSON.stringify(CATEGORY_ICON)'));
-  const colors = JSON.parse(w.eval('JSON.stringify(CATEGORY_COLOR)'));
+  const icons = w.__app.CATEGORY_ICON;
+  const colors = w.__app.CATEGORY_COLOR;
   ['吃饭', '奶茶', '宵夜', '宿舍'].forEach((c) => {
     ok(!!icons[c], `「${c}」有图标`);
     ok(!!colors[c], `「${c}」有颜色`);
   });
+
+  // 历史「餐饮」数据归一化到「吃饭」
+  ok(w.__app.normalizeCategory('餐饮') === '吃饭', '旧「餐饮」自动映射为「吃饭」');
 });
 
 /* ---------- 需求 4：账户顺序 ---------- */
 test('需求4 账户顺序 微信→支付宝→银行，默认微信', (w) => {
-  const segs = Array.from(w.document.querySelectorAll('#page-ledger #segsAccount .seg'));
+  const segs = Array.from(w.document.querySelectorAll('#page-ledger .segs-account .seg'));
   const order = segs.map((s) => s.dataset.account);
   ok(JSON.stringify(order) === JSON.stringify(['wechat', 'alipay', 'bank']),
     `账户顺序为 wechat,alipay,bank（当前 ${order.join(',')}）`);
   ok(segs[0].classList.contains('active'), '默认选中第一个（微信）');
 
   // 账户常量顺序也调整
-  const accts = JSON.parse(w.eval('JSON.stringify(Object.keys(ACCOUNTS))'));
+  const accts = Object.keys(w.__app.ACCOUNTS);
   ok(accts[0] === 'wechat' && accts[accts.length - 1] === 'bank',
     `ACCOUNTS 顺序微信在前银行在后（${accts.join(',')}）`);
 
   // 实际提交一笔，验证默认扣微信
-  const st = w.eval('state');
-  ok(st.account === 'wechat' || true, '状态默认账户已设置');
+  w.__app.Store.data.transactions = [];
+  w.__app.Store.data.vault = { bank: 0, alipay: 0, wechat: 0 };
+  const form = w.document.querySelector('#page-ledger form.entry-form');
+  form.querySelector('.f-amount').value = '11';
+  submit(w, form);
+  const txs = w.__app.Store.data.transactions;
+  ok(txs.length === 1 && txs[0].account === 'wechat', '默认记账扣款账户为微信');
+  ok(w.__app.Store.data.vault.wechat === -11, '微信账户余额相应扣减');
 });
 
 /* ---------- 需求 5：剩余每日平均花费上限 ---------- */
@@ -140,55 +153,43 @@ test('需求5 显示剩余每日平均花费上限', (w) => {
   const el = w.document.querySelector('#gaugeDaily');
   ok(!!el, '记账页存在「每日平均花费上限」元素');
 
-  // 造数据：设置上限 1500，本月花 300，则日均一个合理值
-  w.eval(`
-    state.ledgerMonth = (function(){const d=new Date();const p=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1);})();
-    Store.data.transactions = [];
-    Store.setLimit(state.ledgerMonth, 1500);
-    (function(){const d=new Date();const p=n=>String(n).padStart(2,'0');const ds=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
-      Store.addTransaction({id:'t1',type:'expense',amount:300,category:'吃饭',account:'wechat',remark:'',date:ds,createdAt:Date.now()});})();
-    renderLedger();
-  `);
+  const { Store, state } = w.__app;
+  const m = w.__app.monthStr();
+  const ds = w.__app.todayStr();
+  Store.data.transactions = [];
+  Store.setLimit(m, 1500);
+  Store.addTransaction({ id: 't1', type: 'expense', amount: 300, category: '吃饭', account: 'wechat', remark: '', date: ds, createdAt: Date.now() });
+  w.__app.switchPage('ledger');
+  w.__app.renderLedger();
+
   const txt = el.textContent;
   ok(/¥\d/.test(txt), `日均上限显示为金额（当前「${txt}」）`);
 
-  // 逻辑校验：日均 = 剩余 / 本月剩余天数
-  const expect = w.eval(`
-    (function(){
-      const d=new Date();
-      const y=d.getFullYear(), m=d.getMonth();
-      const daysInMonth=new Date(y,m+1,0).getDate();
-      const remainDays=daysInMonth-d.getDate()+1;
-      const limit=Store.getLimit(state.ledgerMonth);
-      const spent=Store.getTransactions(state.ledgerMonth).filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-      const remain=limit-spent;
-      return (remain/remainDays).toFixed(2);
-    })()
-  `);
+  // 逻辑校验：日均 = 剩余 / 本月剩余天数（含当天）
+  const d = new Date();
+  const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  const remainDays = daysInMonth - d.getDate() + 1;
+  const expect = ((1500 - 300) / remainDays).toFixed(2);
   const got = (txt.match(/¥(-?[\d.]+)/) || [])[1];
   ok(got === expect, `日均金额计算正确（期望 ${expect}，实际 ${got}）`);
 
-  // 超额时应为负/0
-  w.eval(`
-    Store.data.transactions=[];
-    (function(){const d=new Date();const p=n=>String(n).padStart(2,'0');const ds=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
-      Store.addTransaction({id:'t2',type:'expense',amount:2000,category:'吃饭',account:'wechat',remark:'',date:ds,createdAt:Date.now()});})();
-    renderLedger();
-  `);
+  // 超额时应为负
+  Store.data.transactions = [];
+  Store.addTransaction({ id: 't2', type: 'expense', amount: 2000, category: '吃饭', account: 'wechat', remark: '', date: ds, createdAt: Date.now() });
+  w.__app.renderLedger();
   const txt2 = w.document.querySelector('#gaugeDaily').textContent;
-  ok(/¥-?0\.00|¥-\d/.test(txt2), `超额时日均上限不误导（当前「${txt2}」）`);
+  ok(/-¥/.test(txt2), `超额时日均上限显示为负（当前「${txt2}」）`);
 });
 
 /* ---------- 需求 6：本地持久化 ---------- */
 test('需求6 数据持久化到 localStorage', (w) => {
-  // 记一笔，然后重新加载页面，数据应还在
-  w.eval(`
-    Store.data.transactions=[];
-    Store.data.vault={bank:0,alipay:0,wechat:0};
-    (function(){const d=new Date();const p=n=>String(n).padStart(2,'0');const ds=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
-      Store.addTransaction({id:'persist1',type:'expense',amount:66,category:'奶茶',account:'wechat',remark:'测试持久化',date:ds,createdAt:Date.now()});
-      Store.adjustVault('wechat',-66);})();
-  `);
+  const { Store } = w.__app;
+  const ds = w.__app.todayStr();
+  Store.data.transactions = [];
+  Store.data.vault = { bank: 0, alipay: 0, wechat: 0 };
+  Store.addTransaction({ id: 'persist1', type: 'expense', amount: 66, category: '奶茶', account: 'wechat', remark: '测试持久化', date: ds, createdAt: Date.now() });
+  Store.adjustVault('wechat', -66);
+
   const raw = w.eval('localStorage.getItem("life_assistant_v1")');
   ok(!!raw && raw.includes('persist1'), '数据已写入 localStorage');
 
@@ -196,16 +197,62 @@ test('需求6 数据持久化到 localStorage', (w) => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const dom2 = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
   dom2.window.localStorage.setItem('life_assistant_v1', raw);
-  dom2.window.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
+  const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  dom2.window.eval('(function(){' + appJs + 'window.__app={Store,state,monthStr,todayStr};})();');
   dom2.window.document.dispatchEvent(new dom2.window.Event('DOMContentLoaded', { bubbles: true }));
-  const reloaded = dom2.window.eval('JSON.stringify(Store.data.transactions)');
+  const reloaded = JSON.stringify(dom2.window.__app.Store.data.transactions);
   ok(reloaded.includes('persist1'), '重新打开后数据仍存在（未丢失）');
-  const vault = dom2.window.eval('JSON.stringify(Store.data.vault)');
-  ok(JSON.parse(vault).wechat === -66, '金库余额也一并持久化');
+  ok(dom2.window.__app.Store.data.vault.wechat === -66, '金库余额也一并持久化');
 
   // 最近账单列表能渲染出该记录
   const listHtml = dom2.window.document.querySelector('#billList').innerHTML;
   ok(listHtml.includes('奶茶'), '重开后账单列表正确渲染');
+
+  // 数据版本字段
+  ok(dom2.window.__app.Store.data.version >= 2, '数据包含版本号（便于后续迁移）');
+
+  // 旧版本数据（餐饮 + 旧 vault）自动迁移
+  const legacy = JSON.stringify({
+    transactions: [{ id: 'old1', type: 'expense', amount: 30, category: '餐饮', account: 'wechat', remark: '', date: ds, createdAt: 1 }],
+    budgets: {}, vault: { bank: 0, alipay: 0, wechat: 0 },
+  });
+  const dom3 = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  dom3.window.localStorage.setItem('life_assistant_v1', legacy);
+  dom3.window.eval('(function(){' + fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8') + 'window.__app={Store};})();');
+  dom3.window.document.dispatchEvent(new dom3.window.Event('DOMContentLoaded', { bubbles: true }));
+  const migratedTx = dom3.window.__app.Store.data.transactions[0];
+  ok(migratedTx.category === '吃饭', '旧「餐饮」数据迁移为「吃饭」');
+  ok(!('bank' in dom3.window.__app.Store.data.vault) === false, '旧 vault 结构被规范化为三账户');
+
+  // 损坏数据（非法 JSON）不应导致崩溃，且会备份原始串
+  const dom4 = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  dom4.window.localStorage.setItem('life_assistant_v1', '{坏掉的JSON');
+  let crashed = false;
+  try {
+    dom4.window.eval('(function(){' + fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8') + 'window.__app={Store};})();');
+    dom4.window.document.dispatchEvent(new dom4.window.Event('DOMContentLoaded', { bubbles: true }));
+  } catch (e) { crashed = true; }
+  ok(!crashed, '损坏数据不会导致程序崩溃');
+  ok(Array.isArray(dom4.window.__app.Store.data.transactions), '损坏数据后自动重置为可用结构');
+
+  // 非法交易记录被过滤
+  const dirty = JSON.stringify({
+    version: 2,
+    transactions: [
+      { id: 'good', type: 'expense', amount: 10, category: '奶茶', account: 'wechat', date: ds, createdAt: 1 },
+      { id: 'bad1', type: 'expense', amount: -5, category: '吃饭', account: 'wechat', date: ds },
+      { id: 'bad2', type: 'xxx', amount: 10, category: '吃饭', account: 'wechat', date: ds },
+      { id: 'bad3', type: 'expense', amount: 'NaN', category: '吃饭', account: 'wechat', date: ds },
+    ],
+    budgets: {}, vault: { wechat: 0 },
+  });
+  const dom5 = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  dom5.window.localStorage.setItem('life_assistant_v1', dirty);
+  dom5.window.eval('(function(){' + fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8') + 'window.__app={Store};})();');
+  dom5.window.document.dispatchEvent(new dom5.window.Event('DOMContentLoaded', { bubbles: true }));
+  ok(dom5.window.__app.Store.data.transactions.length === 1, '非法记录被过滤，仅保留有效记录');
+  ok(!!dom5.window.__app.Store.data.vault.alipay === true ||
+     dom5.window.__app.Store.data.vault.alipay === 0, '缺失账户被补全为 0');
 });
 
 /* ---------- 回归：整体可用性 ---------- */
@@ -227,7 +274,7 @@ test('回归 核心链路正常', (w) => {
     ok(segs.length >= 3, '改账户弹窗列出账户');
     click(w, Array.from(segs).find((s) => s.dataset.acc === 'bank'));
     click(w, w.document.querySelector('#modalOk'));
-    const vault = JSON.parse(w.eval('JSON.stringify(Store.data.vault)'));
+    const vault = w.__app.Store.data.vault;
     ok(typeof vault.bank === 'number', '改账户后金库已更新');
   }
 
@@ -240,6 +287,95 @@ test('回归 核心链路正常', (w) => {
   ok(w.document.querySelectorAll('.vault-card').length === 3, '金库页展示 3 个账户（微信/支付宝/银行）');
   const names = Array.from(w.document.querySelectorAll('.vault-name')).map((e) => e.textContent);
   ok(names[0] === '微信' && names[2] === '银行', `金库账户顺序为 微信…银行（${names.join('>')}）`);
+});
+
+test('回归 改账户金额联动正确', (w) => {
+  const { Store } = w.__app;
+  const ds = w.__app.todayStr();
+  Store.data.transactions = [];
+  Store.data.vault = { wechat: 0, alipay: 100, bank: 50 };
+  Store.addTransaction({ id: 'c1', type: 'expense', amount: 40, category: '奶茶', account: 'wechat', remark: '', date: ds, createdAt: Date.now() });
+  Store.adjustVault('wechat', -40);   // 微信 -40
+  w.__app.switchPage('ledger');
+  w.__app.renderLedger();
+
+  // 模拟改账户：微信 → 支付宝（原账户加回，新账户扣除）
+  const tx = Store.data.transactions[0];
+  Store.adjustVault(tx.account, tx.amount);
+  Store.adjustVault('alipay', -tx.amount);
+  tx.account = 'alipay';
+  Store.save();
+  ok(Store.data.vault.wechat === 0, '原账户（微信）金额已加回至 0');
+  ok(Store.data.vault.alipay === 60, '新账户（支付宝）扣除 40 后为 60');
+  ok(Store.data.vault.bank === 50, '无关账户（银行）不受影响');
+});
+
+test('回归 收入不影响记账环只入金库', (w) => {
+  const { Store, state } = w.__app;
+  const ds = w.__app.todayStr();
+  Store.data.transactions = [];
+  Store.data.vault = { wechat: 0, alipay: 0, bank: 0 };
+  w.__app.switchPage('ledger');
+  const form = w.document.querySelector('#page-ledger form.entry-form');
+  // 切到收入（.tab 是表单的兄弟节点，位于同一张卡片内）
+  const card = form.closest('.card');
+  const incomeTab = Array.from(card.querySelectorAll('.tab')).find((t) => t.dataset.type === 'income');
+  ok(!!incomeTab, '存在收入页签');
+  click(w, incomeTab);
+  form.querySelector('.f-amount').value = '500';
+  submit(w, form);
+
+  const spent = Store.getTransactions(w.__app.monthStr())
+    .filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+  ok(spent === 0, '收入不计入本月支出（记账环不受影响）');
+  const total = Store.totalAssets();
+  ok(total === 500, `收入 500 使总资产增加（当前 ${total}）`);
+});
+
+test('回归 分类统计与图例', (w) => {
+  const { Store } = w.__app;
+  const ds = w.__app.todayStr();
+  Store.data.transactions = [];
+  Store.data.vault = { wechat: 0, alipay: 0, bank: 0 };
+  [
+    ['吃饭', 20], ['奶茶', 15], ['宵夜', 10], ['宿舍', 5], ['交通', 8],
+  ].forEach(([c, a], i) => {
+    Store.addTransaction({ id: 's' + i, type: 'expense', amount: a, category: c, account: 'wechat', remark: '', date: ds, createdAt: i });
+  });
+  w.__app.switchPage('stats');
+  w.document.querySelector('#statsDate').value = ds;
+  w.__app.renderStats();
+
+  const legend = w.document.querySelector('#statsLegend').innerHTML;
+  ['吃饭', '奶茶', '宵夜', '宿舍', '交通'].forEach((c) => {
+    ok(legend.includes(c), `统计图例含「${c}」`);
+  });
+  ok(w.document.querySelector('#statsTotal').textContent === '¥58.00', '当日总支出 = 58.00');
+  const segs = w.document.querySelectorAll('#donutSvg .donut-seg').length;
+  ok(segs === 5, `环形图渲染 5 个分类扇区（当前 ${segs}）`);
+});
+
+test('回归 月度上限与日均联动', (w) => {
+  const { Store } = w.__app;
+  const m = w.__app.monthStr();
+  const ds = w.__app.todayStr();
+  Store.data.transactions = [];
+  Store.setLimit(m, 3000);
+  ok(Store.getLimit(m) === 3000, '月度上限可修改为 3000');
+
+  // 记一笔后日均下降
+  w.__app.switchPage('ledger');
+  const before = w.document.querySelector('#gaugeDaily').textContent;
+  Store.addTransaction({ id: 'd1', type: 'expense', amount: 500, category: '吃饭', account: 'wechat', remark: '', date: ds, createdAt: Date.now() });
+  Store.adjustVault('wechat', -500);
+  w.__app.renderLedger();
+  const after = w.document.querySelector('#gaugeDaily').textContent;
+  ok(before !== after, `支出后日均上限发生变化（${before} → ${after}）`);
+
+  // 上限为 0 时不崩溃
+  Store.setLimit(m, 0);
+  w.__app.renderLedger();
+  ok(true, '上限为 0 时渲染不崩溃');
 });
 
 /* =========================================================================

@@ -7,25 +7,41 @@
 
 /* ---------------------- 常量 ---------------------- */
 const STORE_KEY = 'life_assistant_v1';
+const DATA_VERSION = 2;
 const DEFAULT_LIMIT = 1500;
 
-const CATEGORIES = ['餐饮', '交通', '购物', '娱乐', '其它'];
-const CATEGORY_ICON = { 餐饮: '🍚', 交通: '🚌', 购物: '🛍️', 娱乐: '🎮', 其它: '📌' };
+/* 分类：吃饭 / 奶茶 / 宵夜（原「餐饮」拆分）+ 宿舍 + 交通 / 购物 / 娱乐 / 其它 */
+const CATEGORIES = ['吃饭', '奶茶', '宵夜', '宿舍', '交通', '购物', '娱乐', '其它'];
+const CATEGORY_ICON = {
+  吃饭: '🍚', 奶茶: '🧋', 宵夜: '🍢', 宿舍: '🛏️',
+  交通: '🚌', 购物: '🛍️', 娱乐: '🎮', 其它: '📌',
+};
 const CATEGORY_COLOR = {
-  餐饮: '#14b8a6',
+  吃饭: '#14b8a6',
+  奶茶: '#ec4899',
+  宵夜: '#f97316',
+  宿舍: '#8b5cf6',
   交通: '#3b82f6',
   购物: '#f59e0b',
   娱乐: '#a855f7',
   其它: '#94a3b8',
 };
 
-const ACCOUNTS = {
-  bank: { name: '银行', icon: '🏦' },
-  alipay: { name: '支付宝', icon: '💙' },
-  wechat: { name: '微信', icon: '💚' },
-};
+/* 历史数据兼容：旧「餐饮」统一归入「吃饭」 */
+const CATEGORY_ALIAS = { 餐饮: '吃饭' };
+function normalizeCategory(cat) {
+  return CATEGORY_ALIAS[cat] || cat;
+}
 
-const ACCOUNT_COLOR = { bank: '#3b82f6', alipay: '#0ea5e9', wechat: '#22c55e' };
+/* 账户顺序：微信 → 支付宝 → 银行（微信为默认付款方式） */
+const ACCOUNTS = {
+  wechat: { name: '微信', icon: '💚' },
+  alipay: { name: '支付宝', icon: '💙' },
+  bank: { name: '银行', icon: '🏦' },
+};
+const DEFAULT_ACCOUNT = 'wechat';
+
+const ACCOUNT_COLOR = { wechat: '#22c55e', alipay: '#0ea5e9', bank: '#3b82f6' };
 
 /* ---------------------- 工具函数 ---------------------- */
 const $ = (sel) => document.querySelector(sel);
@@ -48,6 +64,7 @@ const monthOf = (s) => (s || '').slice(0, 7);
 
 const money = (n) => '¥' + (Number(n) || 0).toFixed(2);
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const numOr = (v, dft) => (isFinite(Number(v)) ? Number(v) : dft);
 
 function formatDateCN(s) {
   const d = dateOf(s);
@@ -62,26 +79,86 @@ const Store = {
   data: null,
 
   load() {
+    let raw = null;
     try {
-      const raw = localStorage.getItem(STORE_KEY);
-      this.data = raw ? JSON.parse(raw) : null;
+      raw = localStorage.getItem(STORE_KEY);
     } catch (e) {
-      console.warn('读取本地数据失败，已重置', e);
-      this.data = null;
+      console.warn('localStorage 不可用', e);
     }
-    if (!this.data || typeof this.data !== 'object') this.reset();
-    // 结构兜底
-    this.data.transactions = this.data.transactions || [];
-    this.data.budgets = this.data.budgets || {};
-    this.data.vault = Object.assign({ bank: 0, alipay: 0, wechat: 0 }, this.data.vault);
+
+    let parsed = null;
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        // 数据损坏：先备份原始串，避免直接丢失
+        console.warn('本地数据解析失败，已备份原始串', e);
+        try { localStorage.setItem(STORE_KEY + '_backup_' + Date.now(), raw); } catch (_) {}
+        parsed = null;
+      }
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      this.reset();
+      return this.data;
+    }
+
+    this.data = parsed;
+    this.migrate();
+    this.sanitize();
     return this.data;
+  },
+
+  /** 数据版本迁移：v1 → v2（餐饮 → 吃饭；账户键顺序调整不影响数据） */
+  migrate() {
+    const v = Number(this.data.version || 1);
+    if (v < 2) {
+      (this.data.transactions || []).forEach((t) => {
+        if (t && t.category) t.category = normalizeCategory(t.category);
+      });
+      this.data.version = DATA_VERSION;
+      this.save();
+    }
+    this.data.version = DATA_VERSION;
+  },
+
+  /** 结构校验与兜底：确保关键字段存在且类型正确 */
+  sanitize() {
+    if (!Array.isArray(this.data.transactions)) this.data.transactions = [];
+    if (!this.data.budgets || typeof this.data.budgets !== 'object') this.data.budgets = {};
+    if (!this.data.vault || typeof this.data.vault !== 'object') this.data.vault = {};
+
+    this.data.vault = {
+      wechat: numOr(this.data.vault.wechat, 0),
+      alipay: numOr(this.data.vault.alipay, 0),
+      bank: numOr(this.data.vault.bank, 0),
+    };
+
+    // 过滤非法交易记录，并补齐缺失字段
+    this.data.transactions = this.data.transactions.filter((t) => {
+      if (!t || typeof t !== 'object') return false;
+      const amt = Number(t.amount);
+      if (!isFinite(amt) || amt <= 0) return false;
+      if (t.type !== 'expense' && t.type !== 'income') return false;
+      if (!t.date || typeof t.date !== 'string') return false;
+      t.amount = round2(amt);
+      t.account = this.data.vault.hasOwnProperty(t.account) ? t.account : DEFAULT_ACCOUNT;
+      t.category = t.type === 'expense' ? normalizeCategory(t.category || '其它') : '';
+      t.remark = typeof t.remark === 'string' ? t.remark : '';
+      t.createdAt = Number(t.createdAt) || Date.parse(t.date) || Date.now();
+      if (!t.id) t.id = uid();
+      return true;
+    });
+
+    if (!Array.isArray(this.data.customNav)) this.data.customNav = [];
   },
 
   reset() {
     this.data = {
+      version: DATA_VERSION,
       transactions: [],
       budgets: {},                    // { "YYYY-MM": limit }
-      vault: { bank: 0, alipay: 0, wechat: 0 },
+      vault: { wechat: 0, alipay: 0, bank: 0 },
       customNav: [],                  // 预留扩展功能
     };
     this.save();
@@ -90,8 +167,11 @@ const Store = {
   save() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(this.data));
+      return true;
     } catch (e) {
-      toast('保存失败：本地存储不可用');
+      console.error('保存失败', e);
+      toast('保存失败：本地存储空间不足或被禁用');
+      return false;
     }
   },
 
@@ -119,18 +199,21 @@ const Store = {
   /* --- 预算 --- */
   getLimit(month) {
     const v = this.data.budgets[month];
-    return v == null ? DEFAULT_LIMIT : Number(v);
+    if (v == null) return DEFAULT_LIMIT;
+    const n = Number(v);
+    return isFinite(n) && n >= 0 ? n : DEFAULT_LIMIT;
   },
   setLimit(month, value) {
-    this.data.budgets[month] = Number(value);
+    this.data.budgets[month] = round2(numOr(value, DEFAULT_LIMIT));
     this.save();
   },
 
   /* --- 金库 --- */
   getVault() { return this.data.vault; },
   adjustVault(account, delta) {
-    if (!this.data.vault.hasOwnProperty(account)) return;
-    this.data.vault[account] = round2(this.data.vault[account] + delta);
+    if (!Object.prototype.hasOwnProperty.call(this.data.vault, account)) return;
+    const d = numOr(delta, 0);
+    this.data.vault[account] = round2(this.data.vault[account] + d);
     this.save();
   },
   totalAssets() {
@@ -225,70 +308,139 @@ function renderGauge() {
   $('#gaugeRemain').style.color = remain < 0 ? 'var(--danger)' : 'var(--teal-dark)';
   $('#gaugeSub').textContent = isCurrent ? '本月已花 / 上限' : `${month} 已花 / 上限`;
 
+  // 剩余每日平均花费上限 = 剩余可支配 / 本月剩余天数（含当天）
+  renderGaugeDaily(month, remain, isCurrent);
+
   const st = $('#gaugeState');
   st.className = 'gauge-state ' + cls;
   st.textContent = label;
 }
 
-/* --- 记账表单 --- */
-function setEntryType(type) {
-  state.entryType = type;
-  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.type === type));
-  const isExpense = type === 'expense';
-  $('#rowCategory').style.display = isExpense ? '' : 'none';
-  $('#labelAccount').textContent = isExpense ? '扣款账户' : '来源账户';
-  $('#submitBtn').textContent = isExpense ? '记录支出' : '记录收入';
-  if (!isExpense) setAccount('bank'); else setAccount(state.account);
-}
+/** 计算并展示每日平均花费上限 */
+function renderGaugeDaily(month, remain, isCurrent) {
+  const el = $('#gaugeDaily');
+  if (!el) return;
 
-function setAccount(acc) {
-  state.account = acc;
-  $$('#segsAccount .seg').forEach((s) => s.classList.toggle('active', s.dataset.account === acc));
-}
+  // 剩余天数：当前月按「含今天」计算；历史月份按整月天数；未来月份按整月天数
+  const [y, m] = month.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const now = new Date();
 
-$$('.tab').forEach((t) => t.addEventListener('click', () => setEntryType(t.dataset.type)));
-$$('#segsAccount .seg').forEach((s) => s.addEventListener('click', () => setAccount(s.dataset.account)));
-
-$('#entryForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const amount = parseFloat($('#fAmount').value);
-  if (!amount || amount <= 0) { toast('请输入有效金额'); return; }
-
-  const type = state.entryType;
-  const account = state.account;
-  const date = $('#fDate').value || todayStr();
-  const isExpense = type === 'expense';
-
-  const tx = {
-    id: uid(),
-    type,
-    amount: round2(amount),
-    category: isExpense ? $('#fCategory').value : '',
-    account,
-    remark: $('#fRemark').value.trim(),
-    date,
-    createdAt: Date.now(),
-  };
-
-  Store.addTransaction(tx);
-  // 联动金库：支出扣款，收入入账
-  Store.adjustVault(account, isExpense ? -tx.amount : tx.amount);
-
-  // 若记录日期所在月份非当前查看月份，自动跳转
-  const txMonth = monthOf(date);
-  if (txMonth !== state.ledgerMonth) {
-    state.ledgerMonth = txMonth;
-    $('#ledgerMonth').value = txMonth;
+  let remainDays;
+  if (month < monthStr()) {
+    remainDays = 0;               // 已过去的月份，不再分配
+  } else if (month === monthStr()) {
+    remainDays = daysInMonth - now.getDate() + 1;   // 含今天
+  } else {
+    remainDays = daysInMonth;     // 未来月份，整月可用
   }
 
-  // 表单重置
-  $('#fAmount').value = '';
-  $('#fRemark').value = '';
-  $('#fDate').value = todayStr();
+  if (remainDays <= 0) {
+    // 历史月份：不再有可分配额度
+    el.textContent = money(0);
+    el.style.color = 'var(--text-3)';
+    el.title = '该月份已结束';
+    return;
+  }
 
-  renderLedger();
-  toast(isExpense ? `已记录支出 ${money(tx.amount)}` : `已记录收入 ${money(tx.amount)}`);
-});
+  const daily = remain / remainDays;
+  el.textContent = (daily < 0 ? '-' : '') + money(Math.abs(daily));
+  el.style.color = daily < 0 ? 'var(--danger)' : 'var(--text)';
+  el.title = remain >= 0
+    ? `剩余 ${money(remain)} ÷ 剩余 ${remainDays} 天`
+    : `已超额 ${money(Math.abs(remain))}，本月已无额度可分配`;
+}
+
+/* --- 记账表单（支持记账页 / 统计页多处实例） --- */
+function initEntryForms() {
+  $$('.entry-form').forEach((form) => {
+    // .tab 页签与表单是兄弟节点，需从包含它们的卡片/页面范围内查找
+    const scope = form.closest('.card') || form.closest('.page') || form.parentElement;
+    const tabsOf = () => Array.from(scope.querySelectorAll('.tab'));
+
+    const typeOf = () => (form.dataset.type || 'expense');
+    const segsAcc = () => Array.from(form.querySelectorAll('.segs-account .seg'));
+    const accountOf = () => {
+      const active = segsAcc().find((s) => s.classList.contains('active'));
+      return active ? active.dataset.account : DEFAULT_ACCOUNT;
+    };
+
+    // 账户切换
+    form.querySelectorAll('.segs-account .seg').forEach((s) => {
+      s.addEventListener('click', () => {
+        segsAcc().forEach((x) => x.classList.toggle('active', x === s));
+      });
+    });
+
+    // 支出 / 收入 切换
+    tabsOf().forEach((t) => {
+      t.addEventListener('click', () => applyEntryType(form, t.dataset.type));
+    });
+
+    // 提交
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const amount = parseFloat(form.querySelector('.f-amount').value);
+      if (!amount || amount <= 0) { toast('请输入有效金额'); return; }
+
+      const type = typeOf();
+      const isExpense = type === 'expense';
+      const account = accountOf();
+      const date = form.querySelector('.f-date').value || todayStr();
+
+      const tx = {
+        id: uid(),
+        type,
+        amount: round2(amount),
+        category: isExpense ? form.querySelector('.f-category').value : '',
+        account,
+        remark: form.querySelector('.f-remark').value.trim(),
+        date,
+        createdAt: Date.now(),
+      };
+
+      Store.addTransaction(tx);
+      // 联动金库：支出扣款，收入入账
+      Store.adjustVault(account, isExpense ? -tx.amount : tx.amount);
+
+      // 若记录日期所在月份非当前查看月份，自动跳转
+      const txMonth = monthOf(date);
+      if (txMonth !== state.ledgerMonth) {
+        state.ledgerMonth = txMonth;
+        $('#ledgerMonth').value = txMonth;
+      }
+
+      // 表单重置
+      form.querySelector('.f-amount').value = '';
+      form.querySelector('.f-remark').value = '';
+      form.querySelector('.f-date').value = todayStr();
+
+      renderLedger();
+      if ($('#page-stats').classList.contains('active')) renderStats();
+      if ($('#page-vault').classList.contains('active')) renderVault();
+      toast(isExpense ? `已记录支出 ${money(tx.amount)}` : `已记录收入 ${money(tx.amount)}`);
+    });
+
+    // 默认状态
+    applyEntryType(form, 'expense');
+    form.querySelector('.f-date').value = todayStr();
+  });
+}
+
+/** 切换某个表单的支出/收入状态 */
+function applyEntryType(form, type) {
+  form.dataset.type = type;
+  const isExpense = type === 'expense';
+  const scope = form.closest('.card') || form.closest('.page') || form.parentElement;
+  scope.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.type === type));
+  form.querySelector('.row-category').style.display = isExpense ? '' : 'none';
+  form.querySelector('.label-account').textContent = isExpense ? '扣款账户' : '来源账户';
+  form.querySelector('.submit-btn').textContent = isExpense ? '记录支出' : '记录收入';
+  // 支出默认扣款账户：微信；收入默认来源账户：银行
+  const dft = isExpense ? DEFAULT_ACCOUNT : 'bank';
+  form.querySelectorAll('.segs-account .seg').forEach((s) =>
+    s.classList.toggle('active', s.dataset.account === dft));
+}
 
 /* --- 账单列表 --- */
 function renderBillList(month) {
@@ -311,8 +463,8 @@ function renderBillList(month) {
 
   list.innerHTML = txs.map((t) => {
     const isExpense = t.type === 'expense';
-    const cat = isExpense ? t.category : '收入';
-    const icon = isExpense ? (CATEGORY_ICON[t.category] || '📌') : '💰';
+    const cat = isExpense ? normalizeCategory(t.category) : '收入';
+    const icon = isExpense ? (CATEGORY_ICON[normalizeCategory(t.category)] || '📌') : '💰';
     const acc = ACCOUNTS[t.account] || { name: t.account, icon: '' };
     return `
       <li class="bill-item" data-id="${t.id}">
@@ -435,7 +587,10 @@ function renderStats() {
   const txs = Store.getByDate(date).filter((t) => t.type === 'expense');
 
   const byCat = {};
-  txs.forEach((t) => { byCat[t.category] = (byCat[t.category] || 0) + t.amount; });
+  txs.forEach((t) => {
+    const c = normalizeCategory(t.category);
+    byCat[c] = (byCat[c] || 0) + t.amount;
+  });
   const total = round2(Object.values(byCat).reduce((s, v) => s + v, 0));
 
   $('#statsTitle').textContent = txs.length
@@ -489,13 +644,14 @@ function renderStats() {
   } else {
     ul.innerHTML = dayList.map((t) => {
       const isExpense = t.type === 'expense';
-      const icon = isExpense ? (CATEGORY_ICON[t.category] || '📌') : '💰';
+      const catName = normalizeCategory(t.category);
+      const icon = isExpense ? (CATEGORY_ICON[catName] || '📌') : '💰';
       const acc = ACCOUNTS[t.account] || { name: t.account, icon: '' };
       return `
         <li class="bill-item">
           <div class="bill-cat">${icon}</div>
           <div class="bill-main">
-            <div class="bill-top"><span class="bill-title">${escapeHtml(isExpense ? t.category : '收入')}</span></div>
+            <div class="bill-top"><span class="bill-title">${escapeHtml(isExpense ? catName : '收入')}</span></div>
             ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
             <div class="bill-meta"><span class="bill-tag">${acc.icon} ${escapeHtml(acc.name)}</span></div>
           </div>
@@ -516,6 +672,7 @@ $('#statsDate').addEventListener('change', (e) => {
 function renderVault() {
   const v = Store.getVault();
   $('#totalAssets').textContent = money(Store.totalAssets());
+  renderStorageNote();
 
   $('#vaultGrid').innerHTML = Object.entries(ACCOUNTS).map(([key, info]) => {
     const bal = v[key] || 0;
@@ -545,13 +702,14 @@ function renderVault() {
   }
   ul.innerHTML = all.map((t) => {
     const isExpense = t.type === 'expense';
-    const icon = isExpense ? (CATEGORY_ICON[t.category] || '📌') : '💰';
+    const catName = normalizeCategory(t.category);
+    const icon = isExpense ? (CATEGORY_ICON[catName] || '📌') : '💰';
     const acc = ACCOUNTS[t.account] || { name: t.account, icon: '' };
     return `
       <li class="bill-item">
         <div class="bill-cat">${icon}</div>
         <div class="bill-main">
-          <div class="bill-top"><span class="bill-title">${escapeHtml(isExpense ? t.category : '收入')}</span></div>
+          <div class="bill-top"><span class="bill-title">${escapeHtml(isExpense ? catName : '收入')}</span></div>
           ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
           <div class="bill-meta">
             <span class="bill-tag">${acc.icon} ${escapeHtml(acc.name)}</span>
@@ -562,6 +720,69 @@ function renderVault() {
       </li>`;
   }).join('');
 }
+
+/* --- 本地存储状态提示 --- */
+function renderStorageNote() {
+  const el = $('#storageNote');
+  if (!el) return;
+  let bytes = 0;
+  try { bytes = (localStorage.getItem(STORE_KEY) || '').length; } catch (_) {}
+  const kb = (bytes / 1024).toFixed(1);
+  const count = Store.data.transactions.length;
+  el.textContent = `数据已保存在本机浏览器 · ${count} 笔记录 · 约 ${kb} KB`;
+}
+
+/* --- 导出 / 导入备份（防止换浏览器或清理数据导致丢失） --- */
+function exportData() {
+  const payload = {
+    app: 'life-assistant',
+    exportedAt: new Date().toISOString(),
+    data: Store.data,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `记账数据备份_${todayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('已导出备份文件');
+}
+
+function importData() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result));
+        const data = parsed && parsed.data ? parsed.data : parsed;
+        if (!data || !Array.isArray(data.transactions)) throw new Error('格式不正确');
+        Store.data = data;
+        Store.migrate();
+        Store.sanitize();
+        Store.save();
+        renderLedger();
+        renderStats();
+        renderVault();
+        toast(`已导入 ${Store.data.transactions.length} 笔记录`);
+      } catch (err) {
+        toast('导入失败：文件格式不正确');
+      }
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+$('#exportBtn').addEventListener('click', exportData);
+$('#importBtn').addEventListener('click', importData);
 
 $('#vaultGrid').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-vault-act="set"]');
@@ -635,18 +856,13 @@ $('#ledgerMonth').addEventListener('change', (e) => {
 
 function init() {
   Store.load();
-  if (!Store.data.transactions.length && !Object.keys(Store.data.budgets).length) {
-    // 首次使用：预置一个示例结构（不塞假数据，保持干净）
-  }
   state.ledgerMonth = monthStr();
   state.statsDate = todayStr();
-  state.account = 'wechat';
 
   $('#ledgerMonth').value = state.ledgerMonth;
   $('#statsDate').value = state.statsDate;
-  $('#fDate').value = todayStr();
 
-  setEntryType('expense');
+  initEntryForms();
   switchPage('ledger');
   renderLedger();
 }

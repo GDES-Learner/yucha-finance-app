@@ -297,6 +297,7 @@ ul { list-style: none; }
 }
 .total-label { font-size: 13px; opacity: .85; }
 .total-value { font-size: 34px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
+.total-note { font-size: 12px; opacity: .8; margin-top: 8px; }
 
 .vault-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

@@ -72,6 +72,10 @@
               <span class="gauge-label">本月剩余可支配</span>
               <span class="gauge-value big" id="gaugeRemain">¥1500.00</span>
             </div>
+            <div class="gauge-row">
+              <span class="gauge-label">剩余每日平均花费上限</span>
+              <span class="gauge-value" id="gaugeDaily">¥0.00</span>
+            </div>
             <div class="gauge-state" id="gaugeState">正常</div>
           </div>
         </div>
@@ -83,16 +87,19 @@
             <button class="tab" data-type="income">收入</button>
           </div>
 
-          <form class="entry-form" id="entryForm" autocomplete="off">
+          <form class="entry-form" autocomplete="off">
             <div class="form-row">
               <label>金额</label>
-              <input type="number" id="fAmount" step="0.01" min="0" placeholder="0.00" required />
+              <input type="number" class="f-amount" step="0.01" min="0" placeholder="0.00" required />
             </div>
 
-            <div class="form-row" id="rowCategory">
+            <div class="form-row row-category">
               <label>分类</label>
-              <select id="fCategory">
-                <option value="餐饮">餐饮</option>
+              <select class="f-category">
+                <option value="吃饭">吃饭</option>
+                <option value="奶茶">奶茶</option>
+                <option value="宵夜">宵夜</option>
+                <option value="宿舍">宿舍</option>
                 <option value="交通">交通</option>
                 <option value="购物">购物</option>
                 <option value="娱乐">娱乐</option>
@@ -101,25 +108,25 @@
             </div>
 
             <div class="form-row">
-              <label id="labelAccount">扣款账户</label>
-              <div class="segmented" id="segsAccount">
-                <button type="button" class="seg" data-account="bank">银行</button>
-                <button type="button" class="seg" data-account="alipay">支付宝</button>
+              <label class="label-account">扣款账户</label>
+              <div class="segmented segs-account">
                 <button type="button" class="seg active" data-account="wechat">微信</button>
+                <button type="button" class="seg" data-account="alipay">支付宝</button>
+                <button type="button" class="seg" data-account="bank">银行</button>
               </div>
             </div>
 
             <div class="form-row">
               <label>日期</label>
-              <input type="date" id="fDate" />
+              <input type="date" class="f-date" />
             </div>
 
             <div class="form-row">
               <label>备注</label>
-              <input type="text" id="fRemark" placeholder="选填" />
+              <input type="text" class="f-remark" placeholder="选填" />
             </div>
 
-            <button type="submit" class="btn btn-primary" id="submitBtn">记录支出</button>
+            <button type="submit" class="btn btn-primary submit-btn">记录支出</button>
           </form>
         </div>
 
@@ -157,6 +164,57 @@
           </div>
         </div>
 
+        <!-- 快捷记账（与记账页共用同一套逻辑） -->
+        <div class="card">
+          <h2 class="card-title" style="margin-bottom:14px">快捷记账</h2>
+          <div class="tabs">
+            <button class="tab active" data-type="expense">支出</button>
+            <button class="tab" data-type="income">收入</button>
+          </div>
+
+          <form class="entry-form" autocomplete="off">
+            <div class="form-row">
+              <label>金额</label>
+              <input type="number" class="f-amount" step="0.01" min="0" placeholder="0.00" required />
+            </div>
+
+            <div class="form-row row-category">
+              <label>分类</label>
+              <select class="f-category">
+                <option value="吃饭">吃饭</option>
+                <option value="奶茶">奶茶</option>
+                <option value="宵夜">宵夜</option>
+                <option value="宿舍">宿舍</option>
+                <option value="交通">交通</option>
+                <option value="购物">购物</option>
+                <option value="娱乐">娱乐</option>
+                <option value="其它">其它</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <label class="label-account">扣款账户</label>
+              <div class="segmented segs-account">
+                <button type="button" class="seg active" data-account="wechat">微信</button>
+                <button type="button" class="seg" data-account="alipay">支付宝</button>
+                <button type="button" class="seg" data-account="bank">银行</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <label>日期</label>
+              <input type="date" class="f-date" />
+            </div>
+
+            <div class="form-row">
+              <label>备注</label>
+              <input type="text" class="f-remark" placeholder="选填" />
+            </div>
+
+            <button type="submit" class="btn btn-primary submit-btn">记录支出</button>
+          </form>
+        </div>
+
         <div class="card">
           <div class="list-head"><h2>当日账单</h2></div>
           <ul class="bill-list" id="statsBillList"></ul>
@@ -172,12 +230,19 @@
         <div class="card total-card">
           <div class="total-label">总资产</div>
           <div class="total-value" id="totalAssets">¥0.00</div>
+          <div class="total-note" id="storageNote">数据已保存在本机浏览器</div>
         </div>
 
         <div class="vault-grid" id="vaultGrid"></div>
 
         <div class="card">
-          <div class="list-head"><h2>账户流水</h2></div>
+          <div class="list-head">
+            <h2>账户流水</h2>
+            <div class="head-actions">
+              <button class="btn-mini" id="exportBtn">导出备份</button>
+              <button class="btn-mini" id="importBtn">导入恢复</button>
+            </div>
+          </div>
           <ul class="bill-list" id="vaultBillList"></ul>
         </div>
       </section>
