@@ -333,6 +333,79 @@ test('需求7 记账扣款默认走零钱且不影响零钱通', (w) => {
   ok(Store.data.vault.wechat_lct === 800, '零钱通依旧不受影响');
 });
 
+/* ---------- 需求 8：账单明细可切换是否计入环形图 ---------- */
+test('需求8 账单明细可切换是否计入环形图', (w) => {
+  const { Store } = w.__app;
+  const ds = w.__app.todayStr();
+  const m = w.__app.monthStr();
+  Store.data.transactions = [];
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
+  Store.setLimit(m, 1000);
+
+  // 两笔支出：100 + 200
+  Store.addTransaction({ id: 'e1', type: 'expense', amount: 100, category: '吃饭', account: 'wechat', remark: '', date: ds, counted: true, createdAt: 1 });
+  Store.addTransaction({ id: 'e2', type: 'expense', amount: 200, category: '奶茶', account: 'wechat', remark: '', date: ds, counted: true, createdAt: 2 });
+  w.__app.switchPage('ledger');
+  w.__app.renderLedger();
+
+  // 初始：环形图已花 300，进度 30%
+  ok(w.document.querySelector('#gaugeSpent').textContent === '¥300.00', '初始环形图已花 = 300');
+  ok(w.document.querySelector('#gaugePct').textContent === '30%', '初始进度 = 30%');
+
+  // 每笔支出都有切换按钮，且默认显示「已计入」
+  const btns = Array.from(w.document.querySelectorAll('#billList button[data-act="toggle-count"]'));
+  ok(btns.length === 2, `每笔支出都有计入开关（${btns.length} 个）`);
+  ok(btns[0].textContent.includes('已计入'), '默认状态为「已计入」');
+
+  // 点击第一笔（200 或 100，按渲染顺序）切换为不计入
+  click(w, btns[0]);
+  const excludedId = btns[0].closest('.bill-item').dataset.id;
+  const excludedAmt = excludedId === 'e1' ? 100 : 200;
+  const leftAmt = 300 - excludedAmt;
+
+  ok(Store.data.transactions.find((t) => t.id === excludedId).counted === false, '该笔被标记为不计入');
+  ok(w.document.querySelector('#gaugeSpent').textContent === money(leftAmt),
+    `环形图已花减少为 ${leftAmt}`);
+  ok(w.document.querySelector('#listSummary').innerHTML.includes('不计入'), '汇总区出现「不计入」金额');
+
+  // 该行有视觉标记
+  const row = w.document.querySelector(`#billList .bill-item[data-id="${excludedId}"]`);
+  ok(row.classList.contains('excluded'), '不计入的行有淡化样式');
+  ok(!!row.querySelector('.bill-flag'), '不计入的行有「不计入」标签');
+
+  // 再点一次恢复计入
+  const btnNow = row.querySelector('button[data-act="toggle-count"]');
+  click(w, btnNow);
+  ok(Store.data.transactions.find((t) => t.id === excludedId).counted === true, '再次点击恢复计入');
+  ok(w.document.querySelector('#gaugeSpent').textContent === '¥300.00', '环形图恢复为 300');
+
+  // 持久化：重新加载后不计入状态保留
+  click(w, w.document.querySelector(`#billList .bill-item[data-id="e2"] button[data-act="toggle-count"]`));
+  const raw = w.eval('localStorage.getItem("life_assistant_v1")');
+  ok(JSON.parse(raw).transactions.find((t) => t.id === 'e2').counted === false, '不计入状态已持久化');
+});
+
+test('需求8 全部不计入时环形图为 0', (w) => {
+  const { Store } = w.__app;
+  const ds = w.__app.todayStr();
+  const m = w.__app.monthStr();
+  Store.data.transactions = [];
+  Store.setLimit(m, 1000);
+  Store.addTransaction({ id: 'x1', type: 'expense', amount: 500, category: '吃饭', account: 'wechat', remark: '', date: ds, counted: false, createdAt: 1 });
+  Store.addTransaction({ id: 'x2', type: 'expense', amount: 300, category: '购物', account: 'wechat', remark: '', date: ds, counted: false, createdAt: 2 });
+  w.__app.switchPage('ledger');
+  w.__app.renderLedger();
+
+  ok(w.document.querySelector('#gaugeSpent').textContent === '¥0.00', '全部不计入时已花为 0');
+  ok(w.document.querySelector('#gaugePct').textContent === '0%', '进度为 0%');
+  // 日均上限此时应等于 上限/剩余天数
+  const daily = w.document.querySelector('#gaugeDaily').textContent;
+  ok(/¥\d/.test(daily), `日均上限仍可正常显示（${daily}）`);
+
+  // 但账单列表汇总里总支出仍是 800（只是不计入环形图）
+  ok(w.document.querySelector('#listSummary').innerHTML.includes('¥800.00'), '总支出仍如实显示 800');
+});
+
 /* ---------- 回归：整体可用性 ---------- */
 test('回归 核心链路正常', (w) => {
   click(w, w.document.querySelector('.nav-item[data-page="ledger"]'));

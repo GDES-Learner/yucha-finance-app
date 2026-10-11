@@ -33,6 +33,11 @@ function normalizeCategory(cat) {
   return CATEGORY_ALIAS[cat] || cat;
 }
 
+/* 该笔支出是否计入当月环形图（未设置的历史记录默认计入） */
+function isCounted(tx) {
+  return !(tx && tx.counted === false);
+}
+
 /* 账户顺序：微信 → 支付宝 → 银行（微信为默认付款方式）
    account 是交易记录里的扣款账户标识；
    subAccounts 表示该账户在金库中拆分的子板块（微信 = 零钱 / 零钱通）。
@@ -183,6 +188,7 @@ const Store = {
       t.amount = round2(amt);
       t.account = ACCOUNTS.hasOwnProperty(t.account) ? t.account : DEFAULT_ACCOUNT;
       t.category = t.type === 'expense' ? normalizeCategory(t.category || '其它') : '';
+      t.counted = t.counted !== false;   // 默认计入环形图
       t.remark = typeof t.remark === 'string' ? t.remark : '';
       t.createdAt = Number(t.createdAt) || Date.parse(t.date) || Date.now();
       if (!t.id) t.id = uid();
@@ -329,9 +335,10 @@ function renderGauge() {
   const month = state.ledgerMonth;
   const isCurrent = month === monthStr();
 
-  // 本月支出（与账单月份联动，默认本月）
+  // 本月支出（与账单月份联动，默认本月）；仅统计「计入环形图」的支出
   const txs = Store.getTransactions(month);
-  const spent = round2(txs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0));
+  const countedExpenses = txs.filter((t) => t.type === 'expense' && isCounted(t));
+  const spent = round2(countedExpenses.reduce((s, t) => s + t.amount, 0));
   const limit = Store.getLimit(month);
   const remain = round2(limit - spent);
   const ratio = limit > 0 ? spent / limit : (spent > 0 ? 1 : 0);
@@ -446,6 +453,7 @@ function initEntryForms() {
         account,
         remark: form.querySelector('.f-remark').value.trim(),
         date,
+        counted: true,               // 是否计入当月环形图（默认计入）
         createdAt: Date.now(),
       };
 
@@ -499,9 +507,13 @@ function renderBillList(month) {
 
   const expense = round2(txs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0));
   const income = round2(txs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0));
+  const countedExpense = round2(txs.filter((t) => t.type === 'expense' && isCounted(t)).reduce((s, t) => s + t.amount, 0));
+  const excludedExpense = round2(expense - countedExpense);
   $('#listSummary').innerHTML = txs.length
     ? `<span>共 <b>${txs.length}</b> 笔</span>
        <span>支出 <b>${money(expense)}</b></span>
+       <span>计入环形图 <b>${money(countedExpense)}</b></span>
+       ${excludedExpense > 0 ? `<span>不计入 <b>${money(excludedExpense)}</b></span>` : ''}
        <span>收入 <b>${money(income)}</b></span>
        <span>结余 <b>${money(income - expense)}</b></span>`
     : '';
@@ -516,11 +528,15 @@ function renderBillList(month) {
     const cat = isExpense ? normalizeCategory(t.category) : '收入';
     const icon = isExpense ? (CATEGORY_ICON[normalizeCategory(t.category)] || '📌') : '💰';
     const acc = ACCOUNTS[t.account] || { name: t.account, icon: '' };
+    const counted = isCounted(t);
     return `
-      <li class="bill-item" data-id="${t.id}">
+      <li class="bill-item ${isExpense && !counted ? 'excluded' : ''}" data-id="${t.id}">
         <div class="bill-cat">${icon}</div>
         <div class="bill-main">
-          <div class="bill-top"><span class="bill-title">${escapeHtml(cat)}</span></div>
+          <div class="bill-top">
+            <span class="bill-title">${escapeHtml(cat)}</span>
+            ${isExpense && !counted ? '<span class="bill-flag">不计入</span>' : ''}
+          </div>
           ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
           <div class="bill-meta">
             <span class="bill-tag">${acc.icon} ${escapeHtml(acc.name)}</span>
@@ -529,6 +545,9 @@ function renderBillList(month) {
         </div>
         <div class="bill-amt ${isExpense ? 'out' : 'in'}">${isExpense ? '-' : '+'}${money(t.amount).slice(1)}</div>
         <div class="bill-actions">
+          ${isExpense ? `<button class="btn-mini ${counted ? '' : 'off'}" data-act="toggle-count"
+              title="${counted ? '点击后该笔不计入当月环形图' : '点击后该笔计入当月环形图'}">
+              ${counted ? '✓ 已计入' : '○ 未计入'}</button>` : ''}
           ${isExpense ? `<button class="btn-mini" data-act="account">改账户</button>` : ''}
           <button class="btn-mini del" data-act="del">删除</button>
         </div>
@@ -543,7 +562,19 @@ $('#billList').addEventListener('click', (e) => {
   const id = btn.closest('.bill-item').dataset.id;
   if (btn.dataset.act === 'del') deleteTx(id);
   if (btn.dataset.act === 'account') openChangeAccount(id);
+  if (btn.dataset.act === 'toggle-count') toggleCounted(id);
 });
+
+/** 切换某笔支出是否计入当月环形图 */
+function toggleCounted(id) {
+  const tx = Store.data.transactions.find((t) => t.id === id);
+  if (!tx || tx.type !== 'expense') return;
+  tx.counted = !isCounted(tx);
+  Store.save();
+  renderLedger();
+  if (state.page === 'stats') renderStats();
+  toast(tx.counted ? '该笔已计入当月花费' : '该笔已改为不计入当月花费');
+}
 
 function deleteTx(id) {
   const tx = Store.data.transactions.find((t) => t.id === id);

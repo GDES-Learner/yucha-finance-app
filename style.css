@@ -263,6 +263,22 @@ ul { list-style: none; }
 .bill-amt.in { color: var(--teal-dark); }
 .bill-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
+/* 是否计入环形图的开关按钮 */
+.btn-mini.off {
+  color: var(--text-3);
+  border-style: dashed;
+  background: #fbfcfd;
+}
+.btn-mini.off:hover { border-color: var(--teal); color: var(--teal-dark); background: var(--teal-soft); }
+
+/* 不计入当月花费的记录：整体淡化 + 标记 */
+.bill-item.excluded .bill-cat { opacity: .5; }
+.bill-item.excluded .bill-amt { color: var(--text-3); }
+.bill-flag {
+  font-size: 11px; padding: 1px 7px; border-radius: 20px;
+  background: #f1f4f6; color: var(--text-3); font-weight: 500;
+}
+
 .empty {
   text-align: center; color: var(--text-3);
   padding: 32px 0; font-size: 13.5px;
