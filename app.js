@@ -1,6 +1,7 @@
 /* =========================================================================
    个人生活助手 —— 记账 / 统计 / 金库
-   数据存储：localStorage
+   设计：Apple Liquid Glass 材质 + Lucide 线性图标
+   数据存储：localStorage（关闭浏览器不丢失）
    ========================================================================= */
 
 'use strict';
@@ -12,19 +13,35 @@ const DEFAULT_LIMIT = 1500;
 
 /* 分类：吃饭 / 奶茶 / 宵夜（原「餐饮」拆分）+ 宿舍 + 交通 / 购物 / 娱乐 / 其它 */
 const CATEGORIES = ['吃饭', '奶茶', '宵夜', '宿舍', '交通', '购物', '娱乐', '其它'];
+
+/* Lucide 图标名（替代 emoji，保持内容层统一线性风格） */
 const CATEGORY_ICON = {
-  吃饭: '🍚', 奶茶: '🧋', 宵夜: '🍢', 宿舍: '🛏️',
-  交通: '🚌', 购物: '🛍️', 娱乐: '🎮', 其它: '📌',
+  吃饭: 'utensils', 奶茶: 'cup-soda', 宵夜: 'moon', 宿舍: 'bed-double',
+  交通: 'bus', 购物: 'shopping-bag', 娱乐: 'gamepad-2', 其它: 'package',
 };
+
+/* 分类色板：低饱和、与设计系统一致 */
 const CATEGORY_COLOR = {
-  吃饭: '#14b8a6',
-  奶茶: '#ec4899',
-  宵夜: '#f97316',
-  宿舍: '#8b5cf6',
-  交通: '#3b82f6',
-  购物: '#f59e0b',
-  娱乐: '#a855f7',
-  其它: '#94a3b8',
+  吃饭: '#17a073',
+  奶茶: '#c76a9a',
+  宵夜: '#d0803c',
+  宿舍: '#7b6bc4',
+  交通: '#4a7fc1',
+  购物: '#c99a2e',
+  娱乐: '#a3679f',
+  其它: '#8798a0',
+};
+
+/* 每个分类色对应的浅色底（图标 chip 背景） */
+const CATEGORY_TINT = {
+  吃饭: '#e6f5ef',
+  奶茶: '#f8ecf3',
+  宵夜: '#fbeee2',
+  宿舍: '#efedf9',
+  交通: '#e8f0f9',
+  购物: '#f9f2e0',
+  娱乐: '#f4ecf3',
+  其它: '#eef1f1',
 };
 
 /* 历史数据兼容：旧「餐饮」统一归入「吃饭」 */
@@ -39,31 +56,27 @@ function isCounted(tx) {
 }
 
 /* 账户顺序：微信 → 支付宝 → 银行（微信为默认付款方式）
-   account 是交易记录里的扣款账户标识；
-   subAccounts 表示该账户在金库中拆分的子板块（微信 = 零钱 / 零钱通）。
-   记账扣款与交易归属统一走 account 主键，微信内部默认从「零钱」出账。 */
+   微信在金库中拆分为「零钱 / 零钱通」；记账扣款默认走「零钱」。 */
 const ACCOUNTS = {
   wechat: {
-    name: '微信', icon: '💚',
+    name: '微信', icon: 'message-square-text',
     subAccounts: [
-      { key: 'wechat_change', name: '零钱', icon: '💰', isDefault: true },
-      { key: 'wechat_lct', name: '零钱通', icon: '🐖' },
+      { key: 'wechat_change', name: '零钱', icon: 'coins', isDefault: true },
+      { key: 'wechat_lct', name: '零钱通', icon: 'piggy-bank' },
     ],
   },
-  alipay: { name: '支付宝', icon: '💙' },
-  bank: { name: '银行', icon: '🏦' },
+  alipay: { name: '支付宝', icon: 'smartphone' },
+  bank: { name: '银行', icon: 'landmark' },
 };
 const DEFAULT_ACCOUNT = 'wechat';
-
-const ACCOUNT_COLOR = { wechat: '#22c55e', alipay: '#0ea5e9', bank: '#3b82f6' };
 
 /* 金库余额键：微信拆为 wechat_change（零钱）/ wechat_lct（零钱通），其余账户同名 */
 const VAULT_KEYS = ['wechat_change', 'wechat_lct', 'alipay', 'bank'];
 const VAULT_META = {
-  wechat_change: { name: '零钱', icon: '💰', parent: 'wechat' },
-  wechat_lct: { name: '零钱通', icon: '🐖', parent: 'wechat' },
-  alipay: { name: '支付宝', icon: '💙' },
-  bank: { name: '银行', icon: '🏦' },
+  wechat_change: { name: '零钱', icon: 'coins', parent: 'wechat' },
+  wechat_lct: { name: '零钱通', icon: 'piggy-bank', parent: 'wechat' },
+  alipay: { name: '支付宝', icon: 'smartphone' },
+  bank: { name: '银行', icon: 'landmark' },
 };
 /* 交易里的 account → 金库扣减键（微信默认扣「零钱」） */
 const ACCOUNT_TO_VAULT_KEY = { wechat: 'wechat_change', alipay: 'alipay', bank: 'bank' };
@@ -99,6 +112,36 @@ function formatDateCN(s) {
   const week = ['日', '一', '二', '三', '四', '五', '六'];
   const w = new Date(`${d}T00:00:00`).getDay();
   return `${y}/${m}/${day} 周${week[w]}`;
+}
+
+/* ---------------------- Lucide 图标 ---------------------- */
+/** 生成一个 Lucide 图标占位元素（<i data-lucide>） */
+function icon(name, cls) {
+  return `<i data-lucide="${name}"${cls ? ` class="${cls}"` : ''}></i>`;
+}
+/** 渲染所有尚未实例化的 Lucide 图标（幂等，可重复调用） */
+function refreshIcons(root) {
+  try {
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      window.lucide.createIcons({
+        attrs: { 'stroke-width': 1.9 },
+        nameAttr: 'data-lucide',
+        ...(root ? { root } : {}),
+      });
+    }
+  } catch (e) {
+    // 图标库缺失时静默降级为无图标，不影响任何数据功能
+    console.warn('图标渲染失败（不影响功能）', e);
+  }
+}
+
+/* 分类图标 chip（浅色底 + 分类色图标） */
+function catChip(cat, size) {
+  const name = normalizeCategory(cat);
+  const ic = CATEGORY_ICON[name] || 'package';
+  const fg = CATEGORY_COLOR[name] || '#8798a0';
+  const bg = CATEGORY_TINT[name] || '#eef1f1';
+  return `<span class="cat-chip${size === 'lg' ? ' cat-lg' : ''}" style="--chip-bg:${bg};--chip-fg:${fg}">${icon(ic)}</span>`;
 }
 
 /* ---------------------- 数据层 ---------------------- */
@@ -215,7 +258,7 @@ const Store = {
       return true;
     } catch (e) {
       console.error('保存失败', e);
-      toast('保存失败：本地存储空间不足或被禁用');
+      toast('保存失败：本地存储空间不足或被禁用', 'err');
       return false;
     }
   },
@@ -289,18 +332,23 @@ const state = {
 
 /* ---------------------- Toast ---------------------- */
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, kind) {
   const el = $('#toast');
-  el.textContent = msg;
+  if (!el) return;
+  el.innerHTML = icon(kind === 'err' ? 'circle-alert' : 'check') +
+    `<span>${escapeHtml(msg)}</span>`;
+  el.classList.toggle('err', kind === 'err');
   el.classList.add('show');
+  refreshIcons(el);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 1900);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
 }
 
 /* ---------------------- 弹窗 ---------------------- */
 function openModal(html) {
   $('#modal').innerHTML = html;
   $('#modalMask').classList.add('show');
+  refreshIcons($('#modal'));
 }
 function closeModal() {
   $('#modalMask').classList.remove('show');
@@ -328,8 +376,8 @@ $$('.nav-item[data-page]').forEach((btn) => {
    记账页
    ========================================================================= */
 
-/* --- 环形仪表盘 --- */
-const GAUGE_CIRC = 2 * Math.PI * 90; // r=90
+/* --- 环形仪表盘（r=90 → 周长） --- */
+const GAUGE_CIRC = 2 * Math.PI * 90;
 
 function renderGauge() {
   const month = state.ledgerMonth;
@@ -350,7 +398,7 @@ function renderGauge() {
   fill.style.strokeDashoffset = String(GAUGE_CIRC * (1 - shown));
 
   // 颜色分级
-  let color = 'var(--teal)', cls = '', label = '正常';
+  let color = 'var(--brand-500)', cls = '', label = '正常';
   if (ratio > 1) { color = 'var(--danger)'; cls = 'danger'; label = '已超额支出'; }
   else if (ratio >= 0.7) { color = 'var(--warn)'; cls = 'warn'; label = '接近上限，注意控制'; }
   fill.style.stroke = color;
@@ -362,7 +410,7 @@ function renderGauge() {
   $('#gaugeSpent').textContent = money(spent);
   $('#gaugeLimit').textContent = money(limit);
   $('#gaugeRemain').textContent = (remain >= 0 ? '' : '-') + money(Math.abs(remain));
-  $('#gaugeRemain').style.color = remain < 0 ? 'var(--danger)' : 'var(--teal-dark)';
+  $('#gaugeRemain').style.color = remain < 0 ? 'var(--danger)' : 'var(--brand-700)';
   $('#gaugeSub').textContent = isCurrent ? '本月已花 / 上限' : `${month} 已花 / 上限`;
 
   // 剩余每日平均花费上限 = 剩余可支配 / 本月剩余天数（含当天）
@@ -370,7 +418,27 @@ function renderGauge() {
 
   const st = $('#gaugeState');
   st.className = 'gauge-state ' + cls;
-  st.textContent = label;
+  st.innerHTML = icon(cls === 'danger' ? 'circle-alert' : (cls === 'warn' ? 'trending-up' : 'shield-check')) + label;
+  refreshIcons(st);
+
+  // 概览卡片
+  const income = round2(txs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0));
+  const rawExpense = round2(txs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0));
+  const ovE = $('#ovExpense');
+  if (ovE) {
+    ovE.textContent = money(rawExpense);
+    $('#ovIncome').textContent = money(income);
+    const ovR = $('#ovRemain');
+    ovR.textContent = (remain >= 0 ? '' : '-') + money(Math.abs(remain));
+    ovR.style.color = remain < 0 ? 'var(--danger)' : 'var(--ink-900)';
+    $('#ovExpenseFoot').textContent = rawExpense > spent
+      ? `含未计入 ${money(rawExpense - spent)}`
+      : '计入预算的支出';
+    $('#ovIncomeFoot').textContent = income > 0 ? '已入账收入' : '本月暂无收入';
+    $('#ovRemainFoot').textContent = remain >= 0 ? '本月可用' : '已超额';
+  }
+  const sub = $('#ledgerSub');
+  if (sub) sub.textContent = `掌握 ${month} 每一笔收支`;
 }
 
 /** 计算并展示每日平均花费上限 */
@@ -395,17 +463,83 @@ function renderGaugeDaily(month, remain, isCurrent) {
   if (remainDays <= 0) {
     // 历史月份：不再有可分配额度
     el.textContent = money(0);
-    el.style.color = 'var(--text-3)';
+    el.style.color = 'var(--ink-400)';
     el.title = '该月份已结束';
     return;
   }
 
   const daily = remain / remainDays;
   el.textContent = (daily < 0 ? '-' : '') + money(Math.abs(daily));
-  el.style.color = daily < 0 ? 'var(--danger)' : 'var(--text)';
+  el.style.color = daily < 0 ? 'var(--danger)' : 'var(--ink-900)';
   el.title = remain >= 0
     ? `剩余 ${money(remain)} ÷ 剩余 ${remainDays} 天`
     : `已超额 ${money(Math.abs(remain))}，本月已无额度可分配`;
+}
+
+/* --- 分类选择器（图标网格 + 隐藏原生 select 同步） --- */
+function buildCatPicker(form) {
+  const picker = form.querySelector('[data-cat-picker]');
+  const native = form.querySelector('select.f-category');
+  if (!picker || !native) return;
+
+  // 隐藏的原生下拉：保留给测试与无 JS 降级，值始终与选择同步
+  native.innerHTML = CATEGORIES.map((c) => `<option value="${c}">${c}</option>`).join('');
+
+  picker.innerHTML = CATEGORIES.map((c, i) => `
+    <button type="button" class="cat-opt${i === 0 ? ' selected' : ''}" data-cat="${c}" aria-pressed="${i === 0}">
+      ${catChip(c)}
+      <span class="cat-opt-name">${c}</span>
+    </button>`).join('');
+
+  native.value = CATEGORIES[0];
+
+  picker.querySelectorAll('.cat-opt').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      picker.querySelectorAll('.cat-opt').forEach((b) => {
+        const on = b === btn;
+        b.classList.toggle('selected', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      native.value = btn.dataset.cat;          // 同步给隐藏 select（表单提交读取）
+    });
+  });
+}
+
+/* --- 账户选择（分段控件，带图标与余额） --- */
+function buildAccountSegs(form) {
+  const wrap = form.querySelector('.segs-account');
+  if (!wrap) return;
+  const v = Store.getVault();
+
+  wrap.innerHTML = Object.entries(ACCOUNTS).map(([key, info]) => {
+    const bal = key === 'wechat' ? Store.wechatTotal() : (v[key] || 0);
+    return `
+      <button type="button" class="seg${key === DEFAULT_ACCOUNT ? ' active' : ''}" data-account="${key}">
+        ${icon(info.icon)}
+        <span class="seg-name">${info.name}</span>
+        <span class="seg-bal">${money(bal)}</span>
+      </button>`;
+  }).join('');
+
+  // 账户切换
+  wrap.querySelectorAll('.seg').forEach((s) => {
+    s.addEventListener('click', () => {
+      wrap.querySelectorAll('.seg').forEach((x) => x.classList.toggle('active', x === s));
+    });
+  });
+}
+
+/** 刷新所有账户选择器上的余额数字（记账后保持同步） */
+function refreshAccountBalances() {
+  const v = Store.getVault();
+  $$('.entry-form').forEach((form) => {
+    form.querySelectorAll('.segs-account .seg').forEach((s) => {
+      const key = s.dataset.account;
+      const bal = key === 'wechat' ? Store.wechatTotal() : (v[key] || 0);
+      const el = s.querySelector('.seg-bal');
+      if (el) el.textContent = money(bal);
+    });
+  });
 }
 
 /* --- 记账表单（支持记账页 / 统计页多处实例） --- */
@@ -413,34 +547,46 @@ function initEntryForms() {
   $$('.entry-form').forEach((form) => {
     // .tab 页签与表单是兄弟节点，需从包含它们的卡片/页面范围内查找
     const scope = form.closest('.card') || form.closest('.page') || form.parentElement;
-    const tabsOf = () => Array.from(scope.querySelectorAll('.tab'));
 
-    const typeOf = () => (form.dataset.type || 'expense');
+    buildCatPicker(form);
+    buildAccountSegs(form);
+
+    const tabsOf = () => Array.from(scope.querySelectorAll('.tab'));
     const segsAcc = () => Array.from(form.querySelectorAll('.segs-account .seg'));
     const accountOf = () => {
       const active = segsAcc().find((s) => s.classList.contains('active'));
       return active ? active.dataset.account : DEFAULT_ACCOUNT;
     };
 
-    // 账户切换
-    form.querySelectorAll('.segs-account .seg').forEach((s) => {
-      s.addEventListener('click', () => {
-        segsAcc().forEach((x) => x.classList.toggle('active', x === s));
-      });
-    });
-
     // 支出 / 收入 切换
     tabsOf().forEach((t) => {
       t.addEventListener('click', () => applyEntryType(form, t.dataset.type));
     });
 
+    // 金额输入：清除错误态
+    const amountWrap = form.querySelector('[data-amount-wrap]');
+    const amountInput = form.querySelector('.f-amount');
+    amountInput.addEventListener('input', () => amountWrap && amountWrap.classList.remove('invalid'));
+
     // 提交
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const amount = parseFloat(form.querySelector('.f-amount').value);
-      if (!amount || amount <= 0) { toast('请输入有效金额'); return; }
 
-      const type = typeOf();
+      const raw = amountInput.value.trim();
+      const amount = parseFloat(raw);
+      if (!raw || !isFinite(amount) || amount <= 0) {
+        if (amountWrap) {
+          amountWrap.classList.add('invalid');
+          // 重新触发抖动动画
+          void amountWrap.offsetWidth;
+        }
+        toast('请输入有效金额', 'err');
+        amountInput.focus();
+        return;
+      }
+      if (amountWrap) amountWrap.classList.remove('invalid');
+
+      const type = form.dataset.type || 'expense';
       const isExpense = type === 'expense';
       const account = accountOf();
       const date = form.querySelector('.f-date').value || todayStr();
@@ -457,6 +603,16 @@ function initEntryForms() {
         createdAt: Date.now(),
       };
 
+      // 提交按钮反馈（忙碌 → 成功）
+      const btn = form.querySelector('.submit-btn');
+      const btnSpan = btn.querySelector('span');
+      const btnIcon = btn.querySelector('i');
+      const prevText = btnSpan ? btnSpan.textContent : '';
+      btn.setAttribute('aria-busy', 'true');
+      if (btnSpan) btnSpan.textContent = '记录中…';
+      if (btnIcon) btnIcon.setAttribute('data-lucide', 'loader-circle');
+      refreshIcons(btn);
+
       Store.addTransaction(tx);
       // 联动金库：支出扣款，收入入账
       Store.adjustVault(account, isExpense ? -tx.amount : tx.amount);
@@ -469,13 +625,20 @@ function initEntryForms() {
       }
 
       // 表单重置
-      form.querySelector('.f-amount').value = '';
+      amountInput.value = '';
       form.querySelector('.f-remark').value = '';
       form.querySelector('.f-date').value = todayStr();
 
       renderLedger();
       if ($('#page-stats').classList.contains('active')) renderStats();
       if ($('#page-vault').classList.contains('active')) renderVault();
+
+      // 恢复按钮
+      btn.removeAttribute('aria-busy');
+      if (btnSpan) btnSpan.textContent = prevText;
+      if (btnIcon) btnIcon.setAttribute('data-lucide', 'check');
+      refreshIcons(btn);
+
       toast(isExpense ? `已记录支出 ${money(tx.amount)}` : `已记录收入 ${money(tx.amount)}`);
     });
 
@@ -491,13 +654,70 @@ function applyEntryType(form, type) {
   const isExpense = type === 'expense';
   const scope = form.closest('.card') || form.closest('.page') || form.parentElement;
   scope.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.type === type));
-  form.querySelector('.row-category').style.display = isExpense ? '' : 'none';
-  form.querySelector('.label-account').textContent = isExpense ? '扣款账户' : '来源账户';
-  form.querySelector('.submit-btn').textContent = isExpense ? '记录支出' : '记录收入';
+
+  const rowCat = form.querySelector('.row-category');
+  if (rowCat) rowCat.style.display = isExpense ? '' : 'none';
+
+  const lbl = form.querySelector('.label-account');
+  if (lbl) {
+    lbl.innerHTML = icon('credit-card') + (isExpense ? '扣款账户' : '来源账户');
+    refreshIcons(lbl);
+  }
+
+  const btn = form.querySelector('.submit-btn');
+  if (btn) {
+    const span = btn.querySelector('span');
+    if (span) span.textContent = isExpense ? '记录支出' : '记录收入';
+  }
+
   // 支出默认扣款账户：微信；收入默认来源账户：银行
   const dft = isExpense ? DEFAULT_ACCOUNT : 'bank';
   form.querySelectorAll('.segs-account .seg').forEach((s) =>
     s.classList.toggle('active', s.dataset.account === dft));
+}
+
+/* --- 账单行（记账页 / 统计页 / 金库页共用） --- */
+function billRow(t, opts) {
+  const o = opts || {};
+  const isExpense = t.type === 'expense';
+  const cat = isExpense ? normalizeCategory(t.category) : '收入';
+  const acc = ACCOUNTS[t.account] || { name: t.account, icon: 'wallet' };
+  const counted = isCounted(t);
+
+  const chip = isExpense
+    ? catChip(cat, o.large ? 'lg' : '')
+    : `<span class="cat-chip" style="--chip-bg:var(--income-soft);--chip-fg:var(--income)">${icon('banknote')}</span>`;
+
+  const actions = [];
+  if (isExpense && o.interactive) {
+    actions.push(`<button class="btn-mini ${counted ? 'on' : 'off'}" data-act="toggle-count"
+        title="${counted ? '点击后该笔不计入当月环形图' : '点击后该笔计入当月环形图'}">
+        ${icon(counted ? 'check' : 'x')}${counted ? '已计入' : '未计入'}</button>`);
+    actions.push(`<button class="btn-mini" data-act="account" title="修改扣款账户">
+        ${icon('arrow-left-right')}改账户</button>`);
+  }
+  if (o.interactive) {
+    actions.push(`<button class="btn-mini del" data-act="del" title="删除这笔记录">
+        ${icon('trash-2')}删除</button>`);
+  }
+
+  return `
+    <li class="bill-item${isExpense && !counted ? ' excluded' : ''}"${t.id ? ` data-id="${t.id}"` : ''}>
+      <div class="bill-cat">${chip}</div>
+      <div class="bill-main">
+        <div class="bill-top">
+          <span class="bill-title">${escapeHtml(cat)}</span>
+          ${isExpense && !counted ? `<span class="bill-flag">${icon('eye-off')}不计入</span>` : ''}
+        </div>
+        ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
+        <div class="bill-meta">
+          <span class="bill-tag">${icon(acc.icon)}${escapeHtml(acc.name)}</span>
+          <span class="bill-date">${formatDateCN(t.date)}</span>
+        </div>
+      </div>
+      <div class="bill-amt ${isExpense ? 'out' : 'in'}">${isExpense ? '-' : '+'}${money(t.amount).slice(1)}</div>
+      ${actions.length ? `<div class="bill-actions">${actions.join('')}</div>` : ''}
+    </li>`;
 }
 
 /* --- 账单列表 --- */
@@ -514,45 +734,23 @@ function renderBillList(month) {
        <span>支出 <b>${money(expense)}</b></span>
        <span>计入环形图 <b>${money(countedExpense)}</b></span>
        ${excludedExpense > 0 ? `<span>不计入 <b>${money(excludedExpense)}</b></span>` : ''}
-       <span>收入 <b>${money(income)}</b></span>
+       <span>收入 <b class="income">${money(income)}</b></span>
        <span>结余 <b>${money(income - expense)}</b></span>`
     : '';
 
   if (!txs.length) {
-    list.innerHTML = `<li class="empty">本月暂无记录，去记一笔吧 ✍️</li>`;
+    list.innerHTML = `
+      <li class="empty">
+        <span class="empty-icon">${icon('notebook-pen')}</span>
+        <span class="empty-title">本月暂无记录</span>
+        <span class="empty-desc">在上方表单记一笔，账单会实时出现在这里</span>
+      </li>`;
+    refreshIcons(list);
     return;
   }
 
-  list.innerHTML = txs.map((t) => {
-    const isExpense = t.type === 'expense';
-    const cat = isExpense ? normalizeCategory(t.category) : '收入';
-    const icon = isExpense ? (CATEGORY_ICON[normalizeCategory(t.category)] || '📌') : '💰';
-    const acc = ACCOUNTS[t.account] || { name: t.account, icon: '' };
-    const counted = isCounted(t);
-    return `
-      <li class="bill-item ${isExpense && !counted ? 'excluded' : ''}" data-id="${t.id}">
-        <div class="bill-cat">${icon}</div>
-        <div class="bill-main">
-          <div class="bill-top">
-            <span class="bill-title">${escapeHtml(cat)}</span>
-            ${isExpense && !counted ? '<span class="bill-flag">不计入</span>' : ''}
-          </div>
-          ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
-          <div class="bill-meta">
-            <span class="bill-tag">${acc.icon} ${escapeHtml(acc.name)}</span>
-            <span class="bill-date">${formatDateCN(t.date)}</span>
-          </div>
-        </div>
-        <div class="bill-amt ${isExpense ? 'out' : 'in'}">${isExpense ? '-' : '+'}${money(t.amount).slice(1)}</div>
-        <div class="bill-actions">
-          ${isExpense ? `<button class="btn-mini ${counted ? '' : 'off'}" data-act="toggle-count"
-              title="${counted ? '点击后该笔不计入当月环形图' : '点击后该笔计入当月环形图'}">
-              ${counted ? '✓ 已计入' : '○ 未计入'}</button>` : ''}
-          ${isExpense ? `<button class="btn-mini" data-act="account">改账户</button>` : ''}
-          <button class="btn-mini del" data-act="del">删除</button>
-        </div>
-      </li>`;
-  }).join('');
+  list.innerHTML = txs.map((t) => billRow(t, { interactive: true })).join('');
+  refreshIcons(list);
 }
 
 /* --- 账单操作（事件委托） --- */
@@ -560,7 +758,7 @@ $('#billList').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const id = btn.closest('.bill-item').dataset.id;
-  if (btn.dataset.act === 'del') deleteTx(id);
+  if (btn.dataset.act === 'del') confirmDelete(id);
   if (btn.dataset.act === 'account') openChangeAccount(id);
   if (btn.dataset.act === 'toggle-count') toggleCounted(id);
 });
@@ -574,6 +772,23 @@ function toggleCounted(id) {
   renderLedger();
   if (state.page === 'stats') renderStats();
   toast(tx.counted ? '该笔已计入当月花费' : '该笔已改为不计入当月花费');
+}
+
+/** 删除前二次确认，避免误删 */
+function confirmDelete(id) {
+  const tx = Store.data.transactions.find((t) => t.id === id);
+  if (!tx) return;
+  const cat = tx.type === 'expense' ? normalizeCategory(tx.category) : '收入';
+  openModal(`
+    <h3>${icon('circle-alert')}确认删除</h3>
+    <p>将删除「${escapeHtml(cat)} · ${money(tx.amount)}」这笔记录，并把金额回滚到对应账户。此操作不可撤销。</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-danger-soft" id="modalOk">删除</button>
+    </div>
+  `);
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => { closeModal(); deleteTx(id); });
 }
 
 function deleteTx(id) {
@@ -593,13 +808,15 @@ function openChangeAccount(id) {
   const tx = Store.data.transactions.find((t) => t.id === id);
   if (!tx) return;
   const opts = Object.entries(ACCOUNTS).map(([k, v]) =>
-    `<div class="seg ${k === tx.account ? 'active' : ''}" data-acc="${k}">${v.icon} ${v.name}</div>`
+    `<button type="button" class="seg${k === tx.account ? ' active' : ''}" data-acc="${k}">
+       ${icon(v.icon)}<span class="seg-name">${v.name}</span>
+     </button>`
   ).join('');
 
   openModal(`
-    <h3>修改扣款账户</h3>
+    <h3>${icon('arrow-left-right')}修改扣款账户</h3>
     <p>当前：${ACCOUNTS[tx.account].name} · ${money(tx.amount)}。切换后，系统会把原账户金额加回，再从新账户扣除等额金额。</p>
-    <div class="segmented" id="modalSegs" style="margin-bottom:18px">${opts}</div>
+    <div class="segmented" id="modalSegs">${opts}</div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="modalCancel">取消</button>
       <button class="btn btn-primary" id="modalOk">确认修改</button>
@@ -624,6 +841,7 @@ function openChangeAccount(id) {
     Store.save();
     closeModal();
     renderLedger();
+    refreshAccountBalances();
     if (state.page === 'vault') renderVault();
     toast(`已改为「${ACCOUNTS[picked].name}」，金额已同步调整`);
   });
@@ -634,11 +852,11 @@ $('#editLimitBtn').addEventListener('click', () => {
   const month = state.ledgerMonth;
   const cur = Store.getLimit(month);
   openModal(`
-    <h3>修改资金上限</h3>
+    <h3>${icon('target')}修改资金上限</h3>
     <p>${month} 的月度消费上限（默认 ¥${DEFAULT_LIMIT}）</p>
-    <div class="form-row">
-      <label>上限</label>
-      <input type="number" id="limitInput" step="0.01" min="0" value="${cur}" />
+    <div class="form-field">
+      <label class="field-label">上限金额</label>
+      <input type="number" class="input" id="limitInput" step="0.01" min="0" value="${cur}" />
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="modalCancel">取消</button>
@@ -649,7 +867,7 @@ $('#editLimitBtn').addEventListener('click', () => {
   $('#modalCancel').addEventListener('click', closeModal);
   $('#modalOk').addEventListener('click', () => {
     const v = parseFloat($('#limitInput').value);
-    if (isNaN(v) || v < 0) { toast('请输入有效数值'); return; }
+    if (isNaN(v) || v < 0) { toast('请输入有效数值', 'err'); return; }
     Store.setLimit(month, round2(v));
     closeModal();
     renderGauge();
@@ -687,13 +905,18 @@ function renderStats() {
 
   if (!entries.length) {
     svg.innerHTML = `<circle cx="110" cy="110" r="${R}" stroke="#eef2f5" stroke-width="26"></circle>`;
-    legend.innerHTML = `<li class="empty" style="padding:0">当天没有支出记录</li>`;
+    legend.innerHTML = `
+      <li class="empty" style="padding:0">
+        <span class="empty-icon">${icon('chart-pie')}</span>
+        <span class="empty-title">当天没有支出记录</span>
+        <span class="empty-desc">换个日期，或在上方快捷记账中记一笔</span>
+      </li>`;
   } else {
     let offset = 0;
     const arcs = entries.map(([cat, amt]) => {
       const frac = amt / total;
       const len = C * frac;
-      const color = CATEGORY_COLOR[cat] || '#94a3b8';
+      const color = CATEGORY_COLOR[cat] || '#8798a0';
       const el = `<circle class="donut-seg" cx="110" cy="110" r="${R}"
           stroke="${color}" stroke-width="26"
           stroke-dasharray="${len} ${C - len}"
@@ -705,41 +928,115 @@ function renderStats() {
 
     legend.innerHTML = entries.map(([cat, amt]) => {
       const frac = amt / total;
-      const color = CATEGORY_COLOR[cat] || '#94a3b8';
+      const color = CATEGORY_COLOR[cat] || '#8798a0';
       return `
         <li class="legend-item">
           <span class="legend-dot" style="background:${color}"></span>
-          <span class="legend-name">${CATEGORY_ICON[cat] || ''} ${escapeHtml(cat)}</span>
+          <span class="legend-name">${icon(CATEGORY_ICON[cat] || 'package')}${escapeHtml(cat)}</span>
           <span class="legend-bar"><i style="width:${(frac * 100).toFixed(1)}%;background:${color}"></i></span>
           <span class="legend-amt">${money(amt)}</span>
           <span class="legend-pct">${(frac * 100).toFixed(1)}%</span>
         </li>`;
     }).join('');
   }
+  refreshIcons(legend);
+
+  // 分类支出排行（按当月数据，反映长期结构）
+  renderStatsRank();
+  // 近 7 日收支趋势
+  renderStatsTrend(date);
 
   // 当日账单
   const dayList = Store.getByDate(date);
   const ul = $('#statsBillList');
   if (!dayList.length) {
-    ul.innerHTML = `<li class="empty">当天暂无账单</li>`;
+    ul.innerHTML = `
+      <li class="empty">
+        <span class="empty-icon">${icon('receipt-text')}</span>
+        <span class="empty-title">当天暂无账单</span>
+      </li>`;
   } else {
-    ul.innerHTML = dayList.map((t) => {
-      const isExpense = t.type === 'expense';
-      const catName = normalizeCategory(t.category);
-      const icon = isExpense ? (CATEGORY_ICON[catName] || '📌') : '💰';
-      const acc = ACCOUNTS[t.account] || { name: t.account, icon: '' };
-      return `
-        <li class="bill-item">
-          <div class="bill-cat">${icon}</div>
-          <div class="bill-main">
-            <div class="bill-top"><span class="bill-title">${escapeHtml(isExpense ? catName : '收入')}</span></div>
-            ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
-            <div class="bill-meta"><span class="bill-tag">${acc.icon} ${escapeHtml(acc.name)}</span></div>
-          </div>
-          <div class="bill-amt ${isExpense ? 'out' : 'in'}">${isExpense ? '-' : '+'}${money(t.amount).slice(1)}</div>
-        </li>`;
-    }).join('');
+    ul.innerHTML = dayList.map((t) => billRow(t, {})).join('');
   }
+  refreshIcons(ul);
+}
+
+/** 分类支出排行：按当前查看月份聚合 */
+function renderStatsRank() {
+  const el = $('#statsRank');
+  if (!el) return;
+  const txs = Store.getTransactions(monthOf(state.statsDate) || state.ledgerMonth)
+    .filter((t) => t.type === 'expense');
+
+  const byCat = {};
+  txs.forEach((t) => {
+    const c = normalizeCategory(t.category);
+    byCat[c] = (byCat[c] || 0) + t.amount;
+  });
+  const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 6);
+
+  if (!entries.length) {
+    el.innerHTML = `
+      <li class="empty" style="padding:var(--sp-6) 0">
+        <span class="empty-icon">${icon('list-ordered')}</span>
+        <span class="empty-title">本月还没有支出</span>
+      </li>`;
+    refreshIcons(el);
+    return;
+  }
+
+  const max = entries[0][1] || 1;
+  el.innerHTML = entries.map(([cat, amt], i) => {
+    const color = CATEGORY_COLOR[cat] || '#8798a0';
+    return `
+      <li class="rank-item">
+        <span class="rank-no">${i + 1}</span>
+        <span class="rank-name">${icon(CATEGORY_ICON[cat] || 'package')}${escapeHtml(cat)}</span>
+        <span class="rank-track"><i style="width:${((amt / max) * 100).toFixed(1)}%;background:${color}"></i></span>
+        <span class="rank-amt">${money(amt)}</span>
+      </li>`;
+  }).join('');
+  refreshIcons(el);
+}
+
+/** 近 7 日收支趋势（以选中日期为终点） */
+function renderStatsTrend(endDate) {
+  const el = $('#statsTrend');
+  if (!el) return;
+
+  const end = new Date(`${endDate}T00:00:00`);
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(end.getTime());
+    d.setDate(end.getDate() - i);
+    days.push(todayStr(d));
+  }
+
+  const agg = days.map((ds) => {
+    const list = Store.getByDate(ds);
+    return {
+      date: ds,
+      exp: round2(list.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0)),
+      inc: round2(list.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0)),
+    };
+  });
+
+  const max = Math.max(1, ...agg.map((a) => Math.max(a.exp, a.inc)));
+  const week = ['日', '一', '二', '三', '四', '五', '六'];
+
+  el.innerHTML = agg.map((a) => {
+    const d = new Date(`${a.date}T00:00:00`);
+    const expH = Math.round((a.exp / max) * 100);
+    const incH = Math.round((a.inc / max) * 100);
+    return `
+      <div class="trend-col" title="${a.date} 支出${money(a.exp)} 收入${money(a.inc)}">
+        <div class="trend-bars">
+          <span class="trend-bar exp" style="height:${Math.max(expH, a.exp > 0 ? 4 : 2)}%"></span>
+          <span class="trend-bar inc" style="height:${Math.max(incH, a.inc > 0 ? 4 : 2)}%"></span>
+        </div>
+        <span class="trend-x">${week[d.getDay()]}</span>
+      </div>`;
+  }).join('');
 }
 
 $('#statsDate').addEventListener('change', (e) => {
@@ -758,23 +1055,23 @@ function renderVault() {
   $('#vaultGrid').innerHTML = Object.entries(ACCOUNTS).map(([key, info]) => {
     // 微信：拆成「零钱 / 零钱通」两个子板块
     if (Array.isArray(info.subAccounts) && info.subAccounts.length) {
-      const total = info.subAccounts.reduce((s, sub) => s + (v[sub.key] || 0), 0);
+      const total = round2(info.subAccounts.reduce((s, sub) => s + (v[sub.key] || 0), 0));
       const subCards = info.subAccounts.map((sub) => {
         const bal = v[sub.key] || 0;
         return `
           <div class="vault-sub">
             <div class="vault-sub-head">
-              <span class="vault-sub-icon">${sub.icon}</span>
+              ${icon(sub.icon)}
               <span class="vault-sub-name">${sub.name}</span>
             </div>
             <div class="vault-sub-amount ${bal < 0 ? 'neg' : ''}">${money(bal)}</div>
-            <button class="btn-mini" data-vault-act="set" data-acc="${sub.key}">改余额</button>
+            <button class="btn-mini" data-vault-act="set" data-acc="${sub.key}">${icon('pencil')}改余额</button>
           </div>`;
       }).join('');
       return `
         <div class="vault-card vault-card-split">
           <div class="vault-head">
-            <span class="vault-icon">${info.icon}</span>
+            <span class="vault-icon">${icon(info.icon)}</span>
             <span class="vault-name">${info.name}</span>
             <span class="vault-total ${total < 0 ? 'neg' : ''}">${money(total)}</span>
           </div>
@@ -787,12 +1084,12 @@ function renderVault() {
     return `
       <div class="vault-card">
         <div class="vault-head">
-          <span class="vault-icon">${info.icon}</span>
+          <span class="vault-icon">${icon(info.icon)}</span>
           <span class="vault-name">${info.name}</span>
         </div>
         <div class="vault-amount ${bal < 0 ? 'neg' : ''}">${money(bal)}</div>
         <div class="vault-actions">
-          <button class="btn-mini" data-vault-act="set" data-acc="${key}">改余额</button>
+          <button class="btn-mini" data-vault-act="set" data-acc="${key}">${icon('pencil')}改余额</button>
         </div>
       </div>`;
   }).join('');
@@ -805,28 +1102,20 @@ function renderVault() {
 
   const ul = $('#vaultBillList');
   if (!all.length) {
-    ul.innerHTML = `<li class="empty">暂无流水记录</li>`;
+    ul.innerHTML = `
+      <li class="empty">
+        <span class="empty-icon">${icon('arrow-left-right')}</span>
+        <span class="empty-title">暂无流水记录</span>
+        <span class="empty-desc">记账后，账户流水会在这里按时间倒序展示</span>
+      </li>`;
+    refreshIcons($('#vaultGrid'));
+    refreshIcons(ul);
     return;
   }
-  ul.innerHTML = all.map((t) => {
-    const isExpense = t.type === 'expense';
-    const catName = normalizeCategory(t.category);
-    const icon = isExpense ? (CATEGORY_ICON[catName] || '📌') : '💰';
-    const acc = ACCOUNTS[t.account] || { name: t.account, icon: '' };
-    return `
-      <li class="bill-item">
-        <div class="bill-cat">${icon}</div>
-        <div class="bill-main">
-          <div class="bill-top"><span class="bill-title">${escapeHtml(isExpense ? catName : '收入')}</span></div>
-          ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
-          <div class="bill-meta">
-            <span class="bill-tag">${acc.icon} ${escapeHtml(acc.name)}</span>
-            <span class="bill-date">${formatDateCN(t.date)}</span>
-          </div>
-        </div>
-        <div class="bill-amt ${isExpense ? 'out' : 'in'}">${isExpense ? '-' : '+'}${money(t.amount).slice(1)}</div>
-      </li>`;
-  }).join('');
+  ul.innerHTML = all.map((t) => billRow(t, {})).join('');
+
+  refreshIcons($('#vaultGrid'));
+  refreshIcons(ul);
 }
 
 /* --- 本地存储状态提示 --- */
@@ -837,7 +1126,8 @@ function renderStorageNote() {
   try { bytes = (localStorage.getItem(STORE_KEY) || '').length; } catch (_) {}
   const kb = (bytes / 1024).toFixed(1);
   const count = Store.data.transactions.length;
-  el.textContent = `数据已保存在本机浏览器 · ${count} 笔记录 · 约 ${kb} KB`;
+  el.innerHTML = `${icon('shield-check')}数据已保存在本机浏览器 · ${count} 笔记录 · 约 ${kb} KB`;
+  refreshIcons(el);
 }
 
 /* --- 导出 / 导入备份（防止换浏览器或清理数据导致丢失） --- */
@@ -879,9 +1169,10 @@ function importData() {
         renderLedger();
         renderStats();
         renderVault();
+        refreshAccountBalances();
         toast(`已导入 ${Store.data.transactions.length} 笔记录`);
       } catch (err) {
-        toast('导入失败：文件格式不正确');
+        toast('导入失败：文件格式不正确', 'err');
       }
     };
     reader.readAsText(file);
@@ -899,11 +1190,11 @@ $('#vaultGrid').addEventListener('click', (e) => {
   const info = VAULT_META[key] || { name: key };
   const cur = Store.getVault()[key] || 0;
   openModal(`
-    <h3>调整「${info.name}」余额</h3>
+    <h3>${icon('coins')}调整「${info.name}」余额</h3>
     <p>直接设置该板块当前余额（允许为负数）</p>
-    <div class="form-row">
-      <label>余额</label>
-      <input type="number" id="vaultInput" step="0.01" value="${cur}" />
+    <div class="form-field">
+      <label class="field-label">余额</label>
+      <input type="number" class="input" id="vaultInput" step="0.01" value="${cur}" />
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="modalCancel">取消</button>
@@ -915,12 +1206,13 @@ $('#vaultGrid').addEventListener('click', (e) => {
   $('#modalCancel').addEventListener('click', closeModal);
   $('#modalOk').addEventListener('click', () => {
     const nv = parseFloat($('#vaultInput').value);
-    if (isNaN(nv)) { toast('请输入有效数值'); return; }
+    if (isNaN(nv)) { toast('请输入有效数值', 'err'); return; }
     if (!Object.prototype.hasOwnProperty.call(Store.data.vault, key)) return;
     Store.data.vault[key] = round2(nv);
     Store.save();
     closeModal();
     renderVault();
+    refreshAccountBalances();
     toast(`${info.name} 余额已更新`);
   });
   $('#vaultInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#modalOk').click(); });
@@ -931,7 +1223,7 @@ $('#vaultGrid').addEventListener('click', (e) => {
    ========================================================================= */
 $('#addFuncBtn').addEventListener('click', () => {
   openModal(`
-    <h3>添加功能</h3>
+    <h3>${icon('sparkles')}添加功能</h3>
     <p>这里是为后续功能预留的扩展入口。可以把你想要的新模块告诉我，我来帮你加上。</p>
     <div class="modal-actions">
       <button class="btn btn-primary" id="modalOk">知道了</button>
@@ -956,6 +1248,7 @@ function escapeHtml(str) {
 function renderLedger() {
   renderGauge();
   renderBillList(state.ledgerMonth);
+  refreshAccountBalances();
 }
 
 $('#ledgerMonth').addEventListener('change', (e) => {
@@ -971,9 +1264,13 @@ function init() {
   $('#ledgerMonth').value = state.ledgerMonth;
   $('#statsDate').value = state.statsDate;
 
+  // 静态图标（侧边栏 / 标题等）
+  refreshIcons(document.body);
+
   initEntryForms();
   switchPage('ledger');
   renderLedger();
+  refreshIcons(document.body);
 }
 
 document.addEventListener('DOMContentLoaded', init);

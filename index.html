@@ -8,28 +8,33 @@
 </head>
 <body>
   <div class="app">
-    <!-- 左侧目录栏 -->
+    <!-- 左侧目录栏（玻璃层） -->
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-logo">📒</span>
+        <span class="brand-logo"><i data-lucide="wallet-minimal"></i></span>
         <span class="brand-name">个人生活助手</span>
       </div>
 
       <nav class="nav" id="nav">
+        <span class="nav-label">功能</span>
         <button class="nav-item active" data-page="ledger">
-          <span class="nav-icon">📒</span><span class="nav-text">记账</span>
+          <span class="nav-icon"><i data-lucide="notebook-pen"></i></span>
+          <span class="nav-text">记账</span>
         </button>
         <button class="nav-item" data-page="stats">
-          <span class="nav-icon">📊</span><span class="nav-text">统计</span>
+          <span class="nav-icon"><i data-lucide="chart-pie"></i></span>
+          <span class="nav-text">统计</span>
         </button>
         <button class="nav-item" data-page="vault">
-          <span class="nav-icon">🏦</span><span class="nav-text">金库</span>
+          <span class="nav-icon"><i data-lucide="landmark"></i></span>
+          <span class="nav-text">金库</span>
         </button>
       </nav>
 
       <div class="sidebar-foot">
         <button class="nav-item add-func" id="addFuncBtn">
-          <span class="nav-icon">＋</span><span class="nav-text">添加功能</span>
+          <span class="nav-icon"><i data-lucide="plus"></i></span>
+          <span class="nav-text">添加功能</span>
         </button>
       </div>
     </aside>
@@ -40,13 +45,38 @@
       <!-- ============ 记账页 ============ -->
       <section class="page active" id="page-ledger">
         <header class="page-head">
-          <h1>记账</h1>
+          <div>
+            <h1>记账</h1>
+            <div class="page-sub" id="ledgerSub">掌握本月每一笔收支</div>
+          </div>
           <div class="head-actions">
-            <button class="btn btn-ghost" id="editLimitBtn">⚙️ 修改上限</button>
+            <input type="month" id="ledgerMonth" class="month-input" aria-label="选择月份" />
+            <button class="btn btn-ghost" id="editLimitBtn">
+              <i data-lucide="sliders-horizontal"></i>修改上限
+            </button>
           </div>
         </header>
 
-        <!-- 环形仪表盘 -->
+        <!-- 概览卡片 -->
+        <div class="overview">
+          <div class="stat-card">
+            <div class="stat-head"><i data-lucide="trending-down"></i>本月支出</div>
+            <div class="stat-value expense" id="ovExpense">¥0.00</div>
+            <div class="stat-foot" id="ovExpenseFoot">计入预算的支出</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-head"><i data-lucide="trending-up"></i>本月收入</div>
+            <div class="stat-value income" id="ovIncome">¥0.00</div>
+            <div class="stat-foot" id="ovIncomeFoot">已入账收入</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-head"><i data-lucide="wallet"></i>剩余预算</div>
+            <div class="stat-value" id="ovRemain">¥0.00</div>
+            <div class="stat-foot" id="ovRemainFoot">本月可用</div>
+          </div>
+        </div>
+
+        <!-- 预算进度（环形仪表盘） -->
         <div class="card gauge-card">
           <div class="gauge-wrap">
             <svg class="gauge" viewBox="0 0 220 220">
@@ -60,11 +90,11 @@
           </div>
           <div class="gauge-info">
             <div class="gauge-row">
-              <span class="gauge-label">本月已花</span>
+              <span class="gauge-label"><i data-lucide="circle-dollar-sign"></i>本月已花</span>
               <span class="gauge-value" id="gaugeSpent">¥0.00</span>
             </div>
             <div class="gauge-row">
-              <span class="gauge-label">资金上限</span>
+              <span class="gauge-label"><i data-lucide="target"></i>资金上限</span>
               <span class="gauge-value" id="gaugeLimit">¥1500.00</span>
             </div>
             <div class="gauge-divider"></div>
@@ -73,7 +103,7 @@
               <span class="gauge-value big" id="gaugeRemain">¥1500.00</span>
             </div>
             <div class="gauge-row">
-              <span class="gauge-label">剩余每日平均花费上限</span>
+              <span class="gauge-label"><i data-lucide="calendar-days"></i>剩余每日平均花费上限</span>
               <span class="gauge-value" id="gaugeDaily">¥0.00</span>
             </div>
             <div class="gauge-state" id="gaugeState">正常</div>
@@ -83,58 +113,53 @@
         <!-- 记账表单 -->
         <div class="card">
           <div class="tabs">
-            <button class="tab active" data-type="expense">支出</button>
-            <button class="tab" data-type="income">收入</button>
+            <button class="tab active" data-type="expense"><i data-lucide="arrow-up-right"></i>支出</button>
+            <button class="tab" data-type="income"><i data-lucide="arrow-down-left"></i>收入</button>
           </div>
 
           <form class="entry-form" autocomplete="off">
-            <div class="form-row">
-              <label>金额</label>
-              <input type="number" class="f-amount" step="0.01" min="0" placeholder="0.00" required />
-            </div>
-
-            <div class="form-row row-category">
-              <label>分类</label>
-              <select class="f-category">
-                <option value="吃饭">吃饭</option>
-                <option value="奶茶">奶茶</option>
-                <option value="宵夜">宵夜</option>
-                <option value="宿舍">宿舍</option>
-                <option value="交通">交通</option>
-                <option value="购物">购物</option>
-                <option value="娱乐">娱乐</option>
-                <option value="其它">其它</option>
-              </select>
-            </div>
-
-            <div class="form-row">
-              <label class="label-account">扣款账户</label>
-              <div class="segmented segs-account">
-                <button type="button" class="seg active" data-account="wechat">微信</button>
-                <button type="button" class="seg" data-account="alipay">支付宝</button>
-                <button type="button" class="seg" data-account="bank">银行</button>
+            <div class="form-field">
+              <label class="field-label" for="amtLedger"><i data-lucide="banknote"></i>金额</label>
+              <div class="amount-field" data-amount-wrap>
+                <span class="cur">¥</span>
+                <input type="number" class="f-amount" id="amtLedger" step="0.01" min="0" placeholder="0.00" required />
               </div>
             </div>
 
-            <div class="form-row">
-              <label>日期</label>
-              <input type="date" class="f-date" />
+            <div class="form-field row-category">
+              <span class="field-label"><i data-lucide="shapes"></i>分类</span>
+              <div class="cat-picker" data-cat-picker></div>
+              <select class="f-category fallback-native" tabindex="-1" aria-hidden="true"></select>
             </div>
 
-            <div class="form-row">
-              <label>备注</label>
-              <input type="text" class="f-remark" placeholder="选填" />
+            <div class="form-field">
+              <span class="field-label label-account"><i data-lucide="credit-card"></i>扣款账户</span>
+              <div class="segmented segs-account"></div>
             </div>
 
-            <button type="submit" class="btn btn-primary submit-btn">记录支出</button>
+            <div class="form-field">
+              <label class="field-label" for="dateLedger"><i data-lucide="calendar"></i>日期</label>
+              <div class="date-field">
+                <input type="date" class="f-date input" id="dateLedger" />
+                <i data-lucide="calendar-days"></i>
+              </div>
+            </div>
+
+            <div class="form-field">
+              <label class="field-label" for="remarkLedger"><i data-lucide="message-square-text"></i>备注 <span class="opt">选填</span></label>
+              <input type="text" class="f-remark input" id="remarkLedger" placeholder="记录一下这笔花在哪" />
+            </div>
+
+            <button type="submit" class="btn btn-primary submit-btn">
+              <i data-lucide="check"></i><span>记录支出</span>
+            </button>
           </form>
         </div>
 
         <!-- 账单列表 -->
         <div class="card">
           <div class="list-head">
-            <h2>账单明细</h2>
-            <input type="month" id="ledgerMonth" class="month-input" />
+            <h2><i data-lucide="receipt-text"></i>账单明细</h2>
           </div>
           <div class="list-summary" id="listSummary"></div>
           <ul class="bill-list" id="billList"></ul>
@@ -144,14 +169,18 @@
       <!-- ============ 统计页 ============ -->
       <section class="page" id="page-stats">
         <header class="page-head">
-          <h1>统计</h1>
+          <div>
+            <h1>统计</h1>
+            <div class="page-sub">看清钱都花在了哪里</div>
+          </div>
           <div class="head-actions">
-            <input type="date" id="statsDate" class="month-input" />
+            <input type="date" id="statsDate" class="month-input" aria-label="选择日期" />
           </div>
         </header>
 
-        <div class="card stats-card">
-          <h2 class="card-title" id="statsTitle">当日支出分类占比</h2>
+        <!-- 分类占比 -->
+        <div class="card">
+          <h2 class="card-title"><i data-lucide="chart-pie"></i><span id="statsTitle">当日支出分类占比</span></h2>
           <div class="stats-body">
             <div class="donut-wrap">
               <svg class="donut" id="donutSvg" viewBox="0 0 220 220"></svg>
@@ -164,59 +193,71 @@
           </div>
         </div>
 
+        <!-- 分析双栏：分类排行 + 近7日趋势 -->
+        <div class="stats-grid">
+          <div class="card">
+            <h2 class="card-title"><i data-lucide="list-ordered"></i>分类支出排行</h2>
+            <ul class="rank-list" id="statsRank"></ul>
+          </div>
+          <div class="card">
+            <h2 class="card-title"><i data-lucide="chart-no-axes-column"></i>近 7 日收支</h2>
+            <div class="trend" id="statsTrend"></div>
+            <div class="trend-legend">
+              <span><i style="background:var(--brand-500)"></i>支出</span>
+              <span><i style="background:var(--brand-300)"></i>收入</span>
+            </div>
+          </div>
+        </div>
+
         <!-- 快捷记账（与记账页共用同一套逻辑） -->
         <div class="card">
-          <h2 class="card-title" style="margin-bottom:14px">快捷记账</h2>
+          <h2 class="card-title" style="margin-bottom:14px"><i data-lucide="plus-circle"></i>快捷记账</h2>
           <div class="tabs">
-            <button class="tab active" data-type="expense">支出</button>
-            <button class="tab" data-type="income">收入</button>
+            <button class="tab active" data-type="expense"><i data-lucide="arrow-up-right"></i>支出</button>
+            <button class="tab" data-type="income"><i data-lucide="arrow-down-left"></i>收入</button>
           </div>
 
           <form class="entry-form" autocomplete="off">
-            <div class="form-row">
-              <label>金额</label>
-              <input type="number" class="f-amount" step="0.01" min="0" placeholder="0.00" required />
-            </div>
-
-            <div class="form-row row-category">
-              <label>分类</label>
-              <select class="f-category">
-                <option value="吃饭">吃饭</option>
-                <option value="奶茶">奶茶</option>
-                <option value="宵夜">宵夜</option>
-                <option value="宿舍">宿舍</option>
-                <option value="交通">交通</option>
-                <option value="购物">购物</option>
-                <option value="娱乐">娱乐</option>
-                <option value="其它">其它</option>
-              </select>
-            </div>
-
-            <div class="form-row">
-              <label class="label-account">扣款账户</label>
-              <div class="segmented segs-account">
-                <button type="button" class="seg active" data-account="wechat">微信</button>
-                <button type="button" class="seg" data-account="alipay">支付宝</button>
-                <button type="button" class="seg" data-account="bank">银行</button>
+            <div class="form-field">
+              <label class="field-label"><i data-lucide="banknote"></i>金额</label>
+              <div class="amount-field" data-amount-wrap>
+                <span class="cur">¥</span>
+                <input type="number" class="f-amount" step="0.01" min="0" placeholder="0.00" required />
               </div>
             </div>
 
-            <div class="form-row">
-              <label>日期</label>
-              <input type="date" class="f-date" />
+            <div class="form-field row-category">
+              <span class="field-label"><i data-lucide="shapes"></i>分类</span>
+              <div class="cat-picker" data-cat-picker></div>
+              <select class="f-category fallback-native" tabindex="-1" aria-hidden="true"></select>
             </div>
 
-            <div class="form-row">
-              <label>备注</label>
-              <input type="text" class="f-remark" placeholder="选填" />
+            <div class="form-field">
+              <span class="field-label label-account"><i data-lucide="credit-card"></i>扣款账户</span>
+              <div class="segmented segs-account"></div>
             </div>
 
-            <button type="submit" class="btn btn-primary submit-btn">记录支出</button>
+            <div class="form-field">
+              <label class="field-label"><i data-lucide="calendar"></i>日期</label>
+              <div class="date-field">
+                <input type="date" class="f-date input" />
+                <i data-lucide="calendar-days"></i>
+              </div>
+            </div>
+
+            <div class="form-field">
+              <label class="field-label"><i data-lucide="message-square-text"></i>备注 <span class="opt">选填</span></label>
+              <input type="text" class="f-remark input" placeholder="记录一下这笔花在哪" />
+            </div>
+
+            <button type="submit" class="btn btn-primary submit-btn">
+              <i data-lucide="check"></i><span>记录支出</span>
+            </button>
           </form>
         </div>
 
         <div class="card">
-          <div class="list-head"><h2>当日账单</h2></div>
+          <div class="list-head"><h2><i data-lucide="receipt-text"></i>当日账单</h2></div>
           <ul class="bill-list" id="statsBillList"></ul>
         </div>
       </section>
@@ -224,23 +265,26 @@
       <!-- ============ 金库页 ============ -->
       <section class="page" id="page-vault">
         <header class="page-head">
-          <h1>金库</h1>
+          <div>
+            <h1>金库</h1>
+            <div class="page-sub">账户余额与资金流水</div>
+          </div>
         </header>
 
         <div class="card total-card">
-          <div class="total-label">总资产</div>
+          <div class="total-label"><i data-lucide="landmark"></i>总资产</div>
           <div class="total-value" id="totalAssets">¥0.00</div>
-          <div class="total-note" id="storageNote">数据已保存在本机浏览器</div>
+          <div class="total-note" id="storageNote"><i data-lucide="shield-check"></i>数据已保存在本机浏览器</div>
         </div>
 
         <div class="vault-grid" id="vaultGrid"></div>
 
         <div class="card">
           <div class="list-head">
-            <h2>账户流水</h2>
+            <h2><i data-lucide="arrow-left-right"></i>账户流水</h2>
             <div class="head-actions">
-              <button class="btn-mini" id="exportBtn">导出备份</button>
-              <button class="btn-mini" id="importBtn">导入恢复</button>
+              <button class="btn-mini" id="exportBtn"><i data-lucide="download"></i>导出备份</button>
+              <button class="btn-mini" id="importBtn"><i data-lucide="upload"></i>导入恢复</button>
             </div>
           </div>
           <ul class="bill-list" id="vaultBillList"></ul>
@@ -251,13 +295,14 @@
   </div>
 
   <!-- 通用弹窗 -->
-  <div class="modal-mask" id="modalMask">
+  <div class="modal-mask" id="modalMask" role="dialog" aria-modal="true">
     <div class="modal" id="modal"></div>
   </div>
 
   <!-- 轻提示 -->
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+  <script src="vendor/lucide.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
