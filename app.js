@@ -102,6 +102,13 @@ function monthStr(d = new Date()) {
 const dateOf = (s) => (s || '').slice(0, 10);
 const monthOf = (s) => (s || '').slice(0, 7);
 
+/** 月份加减：'YYYY-MM' + n 个月，Date 自动处理跨年进位/借位 */
+function addMonths(ym, n) {
+  const [y, m] = (ym || monthStr()).split('-').map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+}
+
 const money = (n) => '¥' + (Number(n) || 0).toFixed(2);
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const numOr = (v, dft) => (isFinite(Number(v)) ? Number(v) : dft);
@@ -328,6 +335,8 @@ const state = {
   account: 'wechat',
   ledgerMonth: monthStr(),
   statsDate: todayStr(),
+  summaryYear: new Date().getFullYear(), // 月度总结浏览年份（动态当年）
+  summaryMonth: monthStr(),              // 月度总结选中月份 'YYYY-MM'
 };
 
 /* ---------------------- Toast ---------------------- */
@@ -940,6 +949,9 @@ function renderStats() {
     ul.innerHTML = dayList.map((t) => billRow(t, {})).join('');
   }
   refreshIcons(ul);
+
+  // 月度总结（12 月网格 + 明细 + 年度对比图）
+  renderMonthlySummary();
 }
 
 /** 分类支出排行：按当前查看月份聚合 */
@@ -1024,6 +1036,169 @@ $('#statsDate').addEventListener('change', (e) => {
   state.statsDate = e.target.value || todayStr();
   renderStats();
 });
+
+/* =========================================================================
+   月度总结：12 月网格 + 选中月分类明细（环比）+ 12 月支出对比图
+   ========================================================================= */
+
+/** 某年 12 个月的支出总额（全部支出，忽略 counted 标记） */
+function monthTotals(year) {
+  const out = [];
+  for (let m = 1; m <= 12; m++) {
+    const ym = `${year}-${pad2(m)}`;
+    const txs = Store.getTransactions(ym).filter((t) => t.type === 'expense');
+    out.push({
+      month: m,
+      ym,
+      total: round2(txs.reduce((s, t) => s + t.amount, 0)),
+      count: txs.length,
+    });
+  }
+  return out;
+}
+
+/** 某月按分类的支出合计（全部支出，忽略 counted 标记） */
+function monthCategoryTotals(ym) {
+  const txs = Store.getTransactions(ym).filter((t) => t.type === 'expense');
+  const byCat = {};
+  txs.forEach((t) => {
+    const c = normalizeCategory(t.category);
+    byCat[c] = (byCat[c] || 0) + t.amount;
+  });
+  return {
+    byCat,
+    total: round2(txs.reduce((s, t) => s + t.amount, 0)),
+    count: txs.length,
+  };
+}
+
+/** 环比 delta 片段：prev 为 0 → 新增；相等 → 持平；否则 ↑↓ 金额 + 百分比 */
+function deltaHtml(cur, prev) {
+  if (prev === 0 && cur === 0) return `<span class="msum-delta flat">${icon('minus')}—</span>`;
+  if (prev === 0) return `<span class="msum-delta up">${icon('trending-up')}新增</span>`;
+  const d = round2(cur - prev);
+  if (d === 0) return `<span class="msum-delta flat">${icon('minus')}持平</span>`;
+  const pct = Math.abs((d / prev) * 100).toFixed(1);
+  const up = d > 0;
+  return `<span class="msum-delta ${up ? 'up' : 'down'}">
+    ${icon(up ? 'trending-up' : 'trending-down')}${up ? '+' : '-'}${money(Math.abs(d)).slice(1)}
+    <b>${up ? '+' : '-'}${pct}%</b></span>`;
+}
+
+function renderMonthlySummary() {
+  const grid = $('#msumGrid');
+  if (!grid) return;
+
+  const year = state.summaryYear;
+  const totals = monthTotals(year);
+
+  // 年份标题
+  const yearEl = $('#msumYear');
+  if (yearEl) yearEl.textContent = String(year);
+  const chartTitle = $('#msumChartTitle');
+  if (chartTitle) chartTitle.textContent = `${year} 年各月支出对比`;
+
+  // ---- 12 个月按钮（2 行 × 6 列） ----
+  grid.innerHTML = totals.map((t) => {
+    const hasData = t.count > 0;
+    const active = t.ym === state.summaryMonth;
+    return `
+      <button type="button"
+        class="month-btn${active ? ' active' : ''}${hasData ? '' : ' empty'}"
+        data-month="${t.ym}" aria-pressed="${active}"
+        title="${t.month}月 ${hasData ? money(t.total) : '暂无支出'}">
+        <span class="month-btn-m">${t.month}月</span>
+        <span class="month-btn-amt">${hasData ? money(t.total) : '—'}</span>
+      </button>`;
+  }).join('');
+
+  // ---- 详情面板 ----
+  const panel = $('#msumPanel');
+  const ym = state.summaryMonth;
+  const cur = monthCategoryTotals(ym);
+  const prev = monthCategoryTotals(addMonths(ym, -1));
+
+  if (cur.count === 0) {
+    panel.hidden = false;
+    panel.innerHTML = `
+      <div class="msum-panel-head">
+        <span class="msum-panel-title">${icon('calendar-range')}${ym} 月度明细</span>
+        <span class="msum-panel-total">${money(0)}</span>
+      </div>
+      <div class="empty" style="padding:var(--sp-6) 0">
+        <span class="empty-icon">${icon('chart-column')}</span>
+        <span class="empty-title">${ym} 暂无支出记录</span>
+        <span class="empty-desc">换一个月份，或到记账页记一笔</span>
+      </div>`;
+  } else {
+    panel.hidden = false;
+    const rows = CATEGORIES
+      .map((cat) => ({ cat, amt: round2(cur.byCat[cat] || 0), prevAmt: round2(prev.byCat[cat] || 0) }))
+      .filter((r) => r.amt > 0)
+      .sort((a, b) => b.amt - a.amt);
+    const max = rows.length ? rows[0].amt : 1;
+
+    const body = rows.map((r) => {
+      const color = CATEGORY_COLOR[r.cat] || '#8798a0';
+      return `
+        <li class="rank-item msum-row">
+          <span class="rank-name">${icon(CATEGORY_ICON[r.cat] || 'package')}${escapeHtml(r.cat)}</span>
+          <span class="rank-track"><i style="width:${((r.amt / max) * 100).toFixed(1)}%;background:${color}"></i></span>
+          <span class="rank-amt">${money(r.amt)}</span>
+          ${deltaHtml(r.amt, r.prevAmt)}
+        </li>`;
+    }).join('');
+
+    panel.innerHTML = `
+      <div class="msum-panel-head">
+        <span class="msum-panel-title">${icon('git-compare')}${ym} 月度明细
+          <em>对比 ${addMonths(ym, -1)}</em></span>
+        <span class="msum-panel-total">${money(cur.total)} ${deltaHtml(cur.total, prev.total)}</span>
+      </div>
+      <ul class="rank-list msum-rows">${body}</ul>
+      <div class="msum-panel-foot">${cur.count} 笔支出 · 全部支出合计 ${money(cur.total)}</div>`;
+  }
+
+  // ---- 12 个月对比条形图 ----
+  const chart = $('#msumChart');
+  const maxTotal = Math.max(1, ...totals.map((t) => t.total));
+  chart.innerHTML = totals.map((t) => {
+    const h = Math.round((t.total / maxTotal) * 100);
+    const active = t.ym === state.summaryMonth;
+    return `
+      <button type="button" class="msum-col${active ? ' active' : ''}" data-month="${t.ym}"
+        title="${t.month}月 ${money(t.total)}">
+        <span class="msum-col-val">${t.total > 0 ? Math.round(t.total) : ''}</span>
+        <span class="msum-col-bar-wrap"><i class="msum-col-bar"
+          style="height:${t.total > 0 ? Math.max(h, 3) : 2}%"></i></span>
+        <span class="msum-col-x">${t.month}月</span>
+      </button>`;
+  }).join('');
+
+  refreshIcons(grid);
+  refreshIcons(panel);
+  refreshIcons(chart);
+}
+
+/** 月度总结交互：年份切换 + 月份选择（事件委托，只绑一次） */
+function initMonthlySummary() {
+  const card = $('#monthlySummaryCard');
+  if (!card) return;
+  card.addEventListener('click', (e) => {
+    const yearBtn = e.target.closest('#msumPrevYear, #msumNextYear');
+    if (yearBtn) {
+      state.summaryYear += (yearBtn.id === 'msumNextYear' ? 1 : -1);
+      state.summaryMonth = `${state.summaryYear}-01`; // 切年后落到该年 1 月
+      renderMonthlySummary();
+      return;
+    }
+    const monthBtn = e.target.closest('.month-btn, .msum-col');
+    if (monthBtn && monthBtn.dataset.month) {
+      state.summaryMonth = monthBtn.dataset.month;
+      renderMonthlySummary();
+    }
+  });
+}
 
 /* =========================================================================
    金库页
@@ -1246,6 +1421,7 @@ function init() {
   refreshIcons(document.body);
 
   initEntryForms();
+  initMonthlySummary();
   switchPage('ledger');
   renderLedger();
   refreshIcons(document.body);

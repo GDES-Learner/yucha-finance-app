@@ -213,6 +213,36 @@
           <div class="list-head"><h2><i data-lucide="receipt-text"></i>当日账单</h2></div>
           <ul class="bill-list" id="statsBillList"></ul>
         </div>
+
+        <!-- 月度总结 -->
+        <div class="card" id="monthlySummaryCard">
+          <div class="list-head msum-head">
+            <h2><i data-lucide="calendar-range"></i>月度总结</h2>
+            <div class="msum-yearsw">
+              <button class="btn-icon" id="msumPrevYear" type="button" aria-label="上一年">
+                <i data-lucide="chevron-left"></i>
+              </button>
+              <span class="msum-year" id="msumYear">2026</span>
+              <button class="btn-icon" id="msumNextYear" type="button" aria-label="下一年">
+                <i data-lucide="chevron-right"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 12 个月按钮：2 行 × 6 列 -->
+          <div class="month-grid" id="msumGrid"></div>
+
+          <!-- 选中月份详情面板（展开于按钮下方） -->
+          <div class="msum-panel" id="msumPanel" hidden></div>
+
+          <!-- 12 个月总支出对比图 -->
+          <div class="msum-chart-wrap">
+            <div class="msum-chart-title">
+              <i data-lucide="chart-column"></i><span id="msumChartTitle">2026 年各月支出对比</span>
+            </div>
+            <div class="msum-chart" id="msumChart"></div>
+          </div>
+        </div>
       </section>
 
       <!-- ============ 金库页 ============ -->

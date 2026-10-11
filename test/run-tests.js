@@ -33,7 +33,8 @@ function boot() {
   const instrumented =
     '(function(){\n' + appJs + '\n' +
     'window.__app = { Store, state, CATEGORIES, CATEGORY_ICON, CATEGORY_COLOR, ACCOUNTS, ' +
-    'normalizeCategory, renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr };\n' +
+    'normalizeCategory, renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr, ' +
+    'renderMonthlySummary, monthTotals, monthCategoryTotals, addMonths };\n' +
     '})();';
   window.eval(instrumented);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
@@ -533,6 +534,132 @@ test('回归 月度上限与日均联动', (w) => {
   Store.setLimit(m, 0);
   w.__app.renderLedger();
   ok(true, '上限为 0 时渲染不崩溃');
+});
+
+/* ---------- 需求 9：月度总结 ---------- */
+test('需求9 月度总结：12月网格 + 明细 + 环比 + 全年对比', (w) => {
+  const { Store, state } = w.__app;
+
+  // boot 每次都是空 store，自行注入数据
+  Store.data.transactions = [];
+  const add = (id, amount, category, date, counted) => Store.addTransaction({
+    id, type: 'expense', amount, category, account: 'wechat', remark: '',
+    date, counted: counted !== false, createdAt: Date.now(),
+  });
+  // 3 月：吃饭 100 + 奶茶 50 = 150
+  add('m3a', 100, '吃饭', '2026-03-05');
+  add('m3b', 50, '奶茶', '2026-03-08');
+  // 4 月：吃饭 200 + 奶茶 50 + 交通 30 = 280
+  add('m4a', 200, '吃饭', '2026-04-02');
+  add('m4b', 50, '奶茶', '2026-04-03');
+  add('m4c', 30, '交通', '2026-04-04');
+
+  w.__app.switchPage('stats');
+  state.summaryYear = 2026;
+  state.summaryMonth = '2026-04';
+  w.__app.renderMonthlySummary();
+
+  // --- 12 个按钮，2 行 × 6 列 ---
+  const grid = w.document.querySelector('#msumGrid');
+  const btns = grid.querySelectorAll('.month-btn');
+  ok(btns.length === 12, `月份网格渲染 12 个按钮（当前 ${btns.length}）`);
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  ok(/\.month-grid\s*\{[^}]*grid-template-columns:\s*repeat\(6,/.test(css), 'CSS 定义 6 列网格（2 行 × 6）');
+
+  // --- 选中月高亮 ---
+  const activeBtn = grid.querySelector('.month-btn.active');
+  ok(!!activeBtn && activeBtn.dataset.month === '2026-04', '选中月按钮高亮为 2026-04');
+
+  // --- 详情面板：分类合计正确（全部支出） ---
+  const panel = w.document.querySelector('#msumPanel');
+  ok(!panel.hidden, '详情面板已展开');
+  ok(panel.textContent.includes('¥280.00'), '4 月合计显示 ¥280.00');
+  const rows = Array.from(panel.querySelectorAll('.msum-row'));
+  const eatRow = rows.find((li) => li.querySelector('.rank-name').textContent.includes('吃饭'));
+  ok(!!eatRow && eatRow.querySelector('.rank-amt').textContent === '¥200.00', '吃饭行 = ¥200.00');
+  ok(rows.length === 3, `明细列出 3 个分类（当前 ${rows.length}）`);
+
+  // --- 环比：吃饭 200 vs 上月 100 → +100 (+100.0%) ---
+  const eatDelta = eatRow.querySelector('.msum-delta').textContent.replace(/\s+/g, '');
+  ok(eatDelta.includes('+') && eatDelta.includes('100.0%'), `吃饭环比 +100.0%（当前「${eatDelta}」）`);
+  // 交通上月无数据 → 新增
+  const transRow = rows.find((li) => li.querySelector('.rank-name').textContent.includes('交通'));
+  ok(transRow.querySelector('.msum-delta').textContent.includes('新增'), '交通（上月无）显示「新增」');
+
+  // --- 12 个月对比图 ---
+  const colsBar = w.document.querySelectorAll('#msumChart .msum-col');
+  ok(colsBar.length === 12, `对比图渲染 12 列（当前 ${colsBar.length}）`);
+  const aprCol = Array.from(colsBar).find((c) => c.dataset.month === '2026-04');
+  ok(!!aprCol && aprCol.classList.contains('active'), '对比图高亮选中月');
+
+  // --- 统计口径：全部支出（含 counted:false）---
+  add('m4d', 70, '购物', '2026-04-05', false); // 不计入环形图
+  w.__app.renderMonthlySummary();
+  const panelText2 = w.document.querySelector('#msumPanel').textContent;
+  ok(panelText2.includes('¥350.00'), '含不计入的支出后 4 月合计 = ¥350.00（口径为全部支出）');
+});
+
+test('需求9 月份算术跨年正确', (w) => {
+  const { addMonths } = w.__app;
+  ok(addMonths('2026-01', -1) === '2025-12', '2026-01 上月 = 2025-12');
+  ok(addMonths('2026-12', 1) === '2027-01', '2026-12 下月 = 2027-01');
+  ok(addMonths('2026-06', 0) === '2026-06', '加减 0 个月不变');
+  ok(addMonths('2026-03', -14) === '2025-01', '跨多个月/年正确（2026-03 −14 → 2025-01）');
+});
+
+test('需求9 年度切换与空数据兜底', (w) => {
+  const { Store, state } = w.__app;
+  Store.data.transactions = [];
+  Store.addTransaction({
+    id: 'y25', type: 'expense', amount: 88, category: '吃饭', account: 'wechat',
+    remark: '', date: '2025-07-10', counted: true, createdAt: Date.now(),
+  });
+  w.__app.switchPage('stats');
+
+  state.summaryYear = 2025;
+  state.summaryMonth = '2025-07';
+  w.__app.renderMonthlySummary();
+  ok(w.document.querySelector('#msumYear').textContent === '2025', '年份标题显示 2025');
+  ok(w.document.querySelector('#msumPanel').textContent.includes('¥88.00'), '2025-07 明细 = ¥88.00');
+
+  // 点击「上一年」箭头 → 2024（无数据）
+  click(w, w.document.querySelector('#msumPrevYear'));
+  ok(state.summaryYear === 2024, '点击上一年箭头 → 2024');
+  ok(w.document.querySelector('#msumYear').textContent === '2024', '标题更新为 2024');
+  ok(w.document.querySelectorAll('#msumGrid .month-btn.empty').length === 12, '空年份 12 个按钮均为空态');
+  ok(w.document.querySelector('#msumPanel').textContent.includes('暂无支出'), '空年份详情面板显示空态');
+
+  // 点两次「下一年」回到 2026
+  click(w, w.document.querySelector('#msumNextYear'));
+  click(w, w.document.querySelector('#msumNextYear'));
+  ok(state.summaryYear === 2026, '点击下一年箭头回到 2026');
+});
+
+test('需求9 点击月份按钮切换明细', (w) => {
+  const { Store, state } = w.__app;
+  Store.data.transactions = [];
+  Store.addTransaction({
+    id: 'may', type: 'expense', amount: 123, category: '娱乐', account: 'wechat',
+    remark: '', date: '2026-05-20', counted: true, createdAt: Date.now(),
+  });
+  w.__app.switchPage('stats');
+  state.summaryYear = 2026;
+  state.summaryMonth = '2026-01';
+  w.__app.renderMonthlySummary();
+
+  const mayBtn = w.document.querySelector('#msumGrid .month-btn[data-month="2026-05"]');
+  ok(!!mayBtn, '存在 2026-05 月按钮');
+  click(w, mayBtn);
+  ok(state.summaryMonth === '2026-05', '点击后选中月变为 2026-05');
+  ok(w.document.querySelector('#msumPanel').textContent.includes('¥123.00'), '明细切到 5 月 = ¥123.00');
+  // 重新查询（innerHTML 重建后原引用已失效）
+  const mayBtn2 = w.document.querySelector('#msumGrid .month-btn[data-month="2026-05"]');
+  ok(mayBtn2.classList.contains('active'), '5 月按钮变为高亮');
+
+  // 点击对比图列同样可切换
+  const janCol = w.document.querySelector('#msumChart .msum-col[data-month="2026-01"]');
+  click(w, janCol);
+  ok(state.summaryMonth === '2026-01', '点击对比图列也能切换月份');
 });
 
 /* =========================================================================
