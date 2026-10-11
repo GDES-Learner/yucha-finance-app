@@ -191,22 +191,98 @@ function tvmazeSeasonTitle(name, seasonNumber) {
   return base + n;
 }
 
+/* -------------------------------------------------------------------------
+   中文标题（别名）处理
+   -------------------------------------------------------------------------
+   TVmaze 的 show.name 基本是英文原名，但 /shows/:id/akas 里带各国别名，
+   其中 country.code === 'CN' 的即中文名（如「进击的巨人」「绝命毒师」）。
+   注意：简体与繁体都会标 CN（同一部剧可能同时有「绝命毒师」和「絕命毒師」），
+   所以优先挑含简体特有字符的那条，挑不到就取第一条 CN 别名。
+   ------------------------------------------------------------------------- */
+
+/** 简体特有字符（繁体写法里不会出现的字形）。命中即认为该别名是简体 */
+var TV_SIMPLIFIED_HINTS = /[击绝师学国岁无开关门东车马鸟风飞龙云台应发识让议单双书长电见说体听觉]|剧|节|总|历|际|罗|发|后/;
+
+/**
+ * 纯函数：从 TVmaze 的 akas 数组里挑出中文名。
+ * 处理三种常见形态：
+ *   1. 同一部剧有「简体」「繁体」两条 CN 别名 → 取简体那条；
+ *   2. 只有一条 CN 别名但内容是「简体 / 繁体」 → 取斜杠左边；
+ *   3. 只有繁体 → 原样返回（聊胜于无，用户可自行改）。
+ * @param {Array} akas /shows/:id/akas 的返回体
+ * @returns {string} 中文名；没有则返回 ''
+ */
+function pickChineseAka(akas) {
+  if (!Array.isArray(akas)) return '';
+  var cnList = [];
+  for (var i = 0; i < akas.length; i++) {
+    var a = akas[i];
+    if (!a || typeof a !== 'object') continue;
+    var country = a.country || {};
+    if (!country || country.code !== 'CN') continue;
+    var name = tvSafeStr(a.name).trim();
+    // TVmaze 的 CN 别名里混有纯拼音（如琅琊榜 → 'Lang ya bang'），那不是中文名，丢掉
+    if (name && /[\u4e00-\u9fa5]/.test(name)) cnList.push(name);
+  }
+  if (!cnList.length) return '';
+
+  // 形态 1：多条 CN 别名 → 优先含简体特有字形的
+  for (var j = 0; j < cnList.length; j++) {
+    if (TV_SIMPLIFIED_HINTS.test(cnList[j])) return stripTradHalf(cnList[j]);
+  }
+  // 形态 2 / 3：取第一条（内部再做一次「简 / 繁」拆分）
+  return stripTradHalf(cnList[0]);
+}
+
+/**
+ * 内部：把「简体 / 繁体」这类合并别名裁成简体那半。
+ * 只在能明确判断左右两侧、且右侧看起来像繁体时才裁，避免误伤
+ * 「A / B」这种真正的并列剧名。
+ */
+function stripTradHalf(name) {
+  var s = tvSafeStr(name).trim();
+  if (s.indexOf('/') < 0) return s;
+  var parts = s.split('/').map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+  if (parts.length < 2) return s;
+  // 若后一段含繁体字形，前一段又含简体字形 → 认定是「简 / 繁」合并，取简体
+  var tradHint = /[絕師學國歲無開關門東車馬鳥風飛龍雲臺應發識讓議單雙書長電見說體聽覺劇節總歷際羅後擊]/;
+  if (tradHint.test(parts[1]) && TV_SIMPLIFIED_HINTS.test(parts[0])) return parts[0];
+  return s;
+}
+
+/**
+ * 取某剧的中文名。失败/无中文名一律返回 ''（永不 reject）。
+ * @param {string} showId
+ * @returns {Promise<string>}
+ */
+function tvmazeGetChineseTitle(showId) {
+  var id = tvSafeStr(showId).trim();
+  if (!id) return Promise.resolve('');
+  return tvmazeGet('/shows/' + encodeURIComponent(id) + '/akas').then(function (r) {
+    if (!r.ok) return '';
+    return pickChineseAka(r.data);
+  }, function () { return ''; });
+}
+
 /**
  * 纯函数：把「剧 + 某一季」转成可直接写入表单的字段对象。
  * @param {object} show   mapTvmazeShow 的产物
  * @param {object} season tvmazeGetSeasons 的产物
+ * @param {string} [chineseName] 该剧的中文名；有则优先作为标题
  * @returns {object}
  */
-function tvmazeSeasonToFields(show, season) {
+function tvmazeSeasonToFields(show, season, chineseName) {
   if (!show) return {};
   var s = season || {};
-  var title = tvmazeSeasonTitle(show.name, s.number);
+  var cn = tvSafeStr(chineseName).trim();
+  var baseName = cn || tvSafeStr(show.name).trim();
+  var title = tvmazeSeasonTitle(baseName, s.number);
   // 海报优先用该季自己的；没有则退回剧集主海报
   var cover = tvSafeStr(s.image) || tvSafeStr(show.image);
   return {
     title: title,
-    // TVmaze 以原名为主：若 name 与最终标题不同（标题带了季号），把它作为原文标题
-    originalTitle: title !== show.name ? show.name : '',
+    // 标题已是中文名，不再把英文原名写进「原文标题」——用户要的是中文，保持整洁
+    originalTitle: '',
     year: s.premiereDate && /^\d{4}/.test(s.premiereDate)
       ? Number(s.premiereDate.slice(0, 4))
       : (show.year != null ? show.year : ''),
@@ -266,6 +342,9 @@ if (typeof window !== 'undefined') {
     tvmazeSearchShows: tvmazeSearchShows,
     tvmazeGetSeasons: tvmazeGetSeasons,
     tvmazeSeasonTitle: tvmazeSeasonTitle,
+    pickChineseAka: pickChineseAka,
+    stripTradHalf: stripTradHalf,
+    tvmazeGetChineseTitle: tvmazeGetChineseTitle,
     tvmazeSeasonToFields: tvmazeSeasonToFields,
     applyTvmazeFields: applyTvmazeFields,
   };

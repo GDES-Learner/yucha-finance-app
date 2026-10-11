@@ -1352,13 +1352,20 @@ function renderTvmazeSeasons(list, show) {
     return;
   }
   box.hidden = false;
-  setTvmazeStatus(`《${show.name}》共 ${list.length} 季，点选你要添加的那一季：`, '');
+  const name = (show && (show.cnName || show.name)) || '所选剧集';
+  setTvmazeStatus(`《${name}》共 ${list.length} 季，点选你要添加的那一季：`, '');
   box.innerHTML = list.map((s) => `
     <button type="button" class="tvmaze-season" data-season-number="${s.number}">
       ${s.image ? `<img src="${escapeHtml(s.image)}" alt="${escapeHtml(s.label)}" loading="lazy" />` : ''}
-      <span class="tvmaze-season-label">${escapeHtml(s.label)}</span>
+      <span class="tvmaze-season-label">${escapeHtml(show && show.cnName ? seasonalLabel(s.number) : s.label)}</span>
       <span class="tvmaze-season-ep">${escapeHtml(s.epText)}</span>
     </button>`).join('');
+}
+
+/** 只有季号时组一个中文标签（用于已取到中文名的场合） */
+function seasonalLabel(num) {
+  const n = normOptPositiveInt(num);
+  return n == null ? '' : `第 ${n} 季`;
 }
 
 /** 内部：搜索框取词并查询剧集 */
@@ -1382,17 +1389,26 @@ function doTvmazeSearch() {
   });
 }
 
-/** 内部：选中某剧 → 拉取其季列表 */
+/** 内部：选中某剧 → 先取中文名，再拉取其季列表 */
 function pickTvmazeShow(showId) {
   const box = document.getElementById('tvmazeResults');
   if (!box) return;
   const all = Array.prototype.slice.call(box.querySelectorAll('.tvmaze-result'));
   all.forEach((n) => { n.classList.toggle('active', n.dataset.showId === String(showId)); });
   setTvmazeStatus('正在获取季列表…', 'loading');
-  const show = showCache[String(showId)];
-  tvmazeGetSeasons(showId).then((seasons) => {
+  const show = showCache[String(showId)] || {};
+  // 并行：季列表 + 中文别名。中文名查不到时返回 ''，不打断流程
+  Promise.all([tvmazeGetSeasons(showId), tvmazeGetChineseTitle(showId)]).then((res) => {
     if (!document.getElementById('tvmazeResults')) return;  // 弹窗已关闭
-    renderTvmazeSeasons(seasons, show || { name: '所选剧集' });
+    const seasons = res[0] || [];
+    const cnName = res[1] || '';
+    const merged = Object.assign({}, show, { cnName: cnName });
+    showCache[String(showId)] = merged;   // 记回缓存，选季时直接取用
+    renderTvmazeSeasons(seasons, merged);
+    // 没有中文名 → 用状态行提示（toast 只有 err 一种告警态，这里不改 toast 语义）
+    if (!cnName) {
+      setTvmazeStatus(`《${show.name || '所选剧集'}》暂无中文译名，标题会先用英文原名，可手动改。点选你要添加的那一季：`, '');
+    }
   }).catch(() => {
     setTvmazeStatus('获取季列表失败，请手动填写。', 'error');
   });
@@ -1407,7 +1423,7 @@ function pickTvmazeSeason(showId, seasonNumber) {
   tvmazeGetSeasons(showId).then((seasons) => {
     const season = seasons.filter((s) => s.number === num)[0];
     if (!season) { setTvmazeStatus('未找到该季信息。', 'error'); return; }
-    const fields = tvmazeSeasonToFields(show, season);
+    const fields = tvmazeSeasonToFields(show, season, show.cnName || '');
     const filled = applyTvmazeFields(fields, coverPickerState);
     // 封面若被写入，同步界面到「图片链接」页签
     if (filled.indexOf('封面') > -1) syncCoverPickerToState();

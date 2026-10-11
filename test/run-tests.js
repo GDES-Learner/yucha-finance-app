@@ -59,7 +59,8 @@ function boot() {
     'coverGetURL, hydrateCovers, saveCoverFile, revokeCoverURL, ' +
     'coverTokens, coverUrlCache, coverPickerHtml, readCoverPicker, hydrateCoverPicker, ' +
     'stripHtml, tvmazeSearchShows, tvmazeGetSeasons, tvmazeSeasonToFields, applyTvmazeFields, ' +
-    'tvmazeSeasonTitle, mapTvmazeShow, showSearchBlockHtml, renderTvmazeShows, setTvmazeStatus, ' +
+    'tvmazeSeasonTitle, mapTvmazeShow, pickChineseAka, stripTradHalf, tvmazeGetChineseTitle, ' +
+    'showSearchBlockHtml, renderTvmazeShows, setTvmazeStatus, ' +
     'CLOUD_PUBLIC_CONFIG, CLOUD_TABLE, ensureCloudClient, isCloudSignedIn, renderSyncEntry, ' +
     'renderCloudCard, openLoginModal, cloudPush, cloudPull, scheduleAutoPush, escapeHtml };\n' +
     // coverPickerState 是被整体重新赋值的 let 变量，直接放进对象会快照化，
@@ -1830,6 +1831,23 @@ function tvmazeSeasonsBody() {
   ];
 }
 
+/** 构造一份 /shows/:id/akas 响应（含简繁各一 + 非 CN + 非中文） */
+function tvmazeAkasBody() {
+  return [
+    { name: 'Кино', country: { code: 'RU', name: 'Russia' } },
+    { name: '進擊的巨人', country: { code: 'CN', name: 'China' } },
+    { name: '进击的巨人', country: { code: 'CN', name: 'China' } },
+    { name: 'Attack on Titan', country: { code: 'US', name: 'United States' } },
+  ];
+}
+/** 只有繁体、没有简体的 akas（用于验证回退到第一条 CN） */
+function tvmazeAkasTradOnlyBody() {
+  return [
+    { name: '絕命毒師', country: { code: 'CN', name: 'China' } },
+    { name: 'Heisenberg', country: { code: 'DE', name: 'Germany' } },
+  ];
+}
+
 test('观影J stripHtml 去标签与实体', (w) => {
   const f = w.__app.stripHtml;
   ok(f('<p>Hello <b>world</b></p>') === 'Hello world', '标签被移除');
@@ -1915,7 +1933,7 @@ test('观影J tvmazeSeasonToFields 字段映射完整', (w) => {
   const season = (() => { const raw = tvmazeSeasonsBody()[2]; return { number: 3, episodeOrder: 22, premiereDate: raw.premiereDate, image: raw.image.medium }; })();
   const f = app.tvmazeSeasonToFields(show, season);
   ok(f.title === 'Attack on Titan3', '标题含季号');
-  ok(f.originalTitle === 'Attack on Titan', '原文标题为剧名本身');
+  ok(f.originalTitle === '', 'v3.2 起不再回填原文标题（保持整洁）');
   ok(f.year === 2018, '年份取该季首播年');
   ok(f.genre === 'Action / Anime / Fantasy / Horror', '类型拼接');
   ok(f.rating === 8.9, '评分');
@@ -1929,7 +1947,7 @@ test('观影J tvmazeSeasonToFields 第 1 季无数字后缀', (w) => {
   const show = app.mapTvmazeShow(tvmazeSearchBody()[0].show);
   const f = app.tvmazeSeasonToFields(show, { number: 1, episodeOrder: 25, premiereDate: '2013-04-07', image: 'https://static.tvmaze.com/s1.jpg' });
   ok(f.title === 'Attack on Titan', '第 1 季标题不加后缀');
-  ok(f.originalTitle === '', '标题与剧名相同时不填原文标题');
+  ok(f.originalTitle === '', '原文标题始终留空');
   ok(f.year === 2013, '年份取第 1 季首播年');
 });
 
@@ -1939,6 +1957,131 @@ test('观影J tvmazeSeasonToFields 集数未知时留空', (w) => {
   const f = app.tvmazeSeasonToFields(show, { number: 4, episodeOrder: null, premiereDate: '2020-12-06', image: '' });
   ok(f.currentSeasonEpisodes === '', '集数未知留空而非 0');
   ok(f.coverUrl === show.image, '该季无海报时回退到剧集主海报');
+});
+
+/* ---------- v3.2 中文标题 ---------- */
+
+test('观影J pickChineseAka 优先取简体中文名', (w) => {
+  const f = w.__app.pickChineseAka;
+  ok(f(tvmazeAkasBody()) === '进击的巨人', '简繁并存时选简体');
+  ok(f(tvmazeAkasTradOnlyBody()) === '絕命毒師', '只有繁体时回退到第一条 CN 别名');
+  ok(f([]) === '', '空数组返回空串');
+  ok(f(null) === '' && f(undefined) === '', '非数组返回空串');
+  ok(f([{ name: 'Attack on Titan', country: { code: 'US' } }]) === '', '只有非 CN 别名返回空串');
+  ok(f([{ name: '  甄嬛传  ', country: { code: 'CN' } }]) === '甄嬛传', '首尾空白被裁掉');
+  ok(f([{ name: 'Lang ya bang', country: { code: 'CN' } }]) === '', '纯拼音的 CN 别名不算中文名（琅琊榜实例）');
+  ok(f([{ name: 'Lang ya bang', country: { code: 'CN' } }, { name: '琅琊榜', country: { code: 'CN' } }]) === '琅琊榜',
+    '拼音与中文并存时取中文');
+});
+
+test('观影J pickChineseAka 合并别名「简体 / 繁体」取简体半边', (w) => {
+  const f = w.__app.pickChineseAka;
+  const body = [{ name: '绝命毒师 / 絕命毒師', country: { code: 'CN' } }];
+  ok(f(body) === '绝命毒师', '斜杠合并形态取简体那半');
+  // 真正的并列剧名（两侧都是简体）不应被裁
+  const par = [{ name: '琅琊榜 / 伪装者', country: { code: 'CN' } }];
+  ok(f(par) === '琅琊榜 / 伪装者', '两侧均为简体时不误裁');
+  ok(w.__app.stripTradHalf('欢乐颂') === '欢乐颂', '无斜杠原样返回');
+  ok(w.__app.stripTradHalf('') === '', '空串安全');
+});
+
+test('观影J tvmazeGetChineseTitle 取回中文名', async (w) => {
+  const app = w.__app;
+  withFetch(w, (url) => {
+    if (url.indexOf('/akas') > -1) return { body: tvmazeAkasBody() };
+    return null;
+  });
+  const cn = await app.tvmazeGetChineseTitle('919');
+  ok(cn === '进击的巨人', '从 akas 取到简体中文名');
+});
+
+test('观影J tvmazeGetChineseTitle 失败/无中文名一律返回空串且不抛错', async (w) => {
+  const app = w.__app;
+  withFetch(w, () => ({ reject: new Error('down') }));
+  let threw = false;
+  let cn = 'x';
+  try { cn = await app.tvmazeGetChineseTitle('919'); } catch (e) { threw = true; }
+  ok(!threw, '不抛异常');
+  ok(cn === '', '网络失败返回空串');
+
+  withFetch(w, () => ({ body: [{ name: 'The Office', country: { code: 'US' } }] }));
+  ok(await app.tvmazeGetChineseTitle('526') === '', '无 CN 别名返回空串');
+
+  const empty = await app.tvmazeGetChineseTitle('');
+  ok(empty === '', '空 id 返回空串且不发请求');
+});
+
+test('观影J tvmazeSeasonToFields 传入中文名时标题用中文', (w) => {
+  const app = w.__app;
+  const show = app.mapTvmazeShow(tvmazeSearchBody()[0].show);
+  const season = { number: 3, episodeOrder: 22, premiereDate: '2018-07-22', image: 'https://static.tvmaze.com/s3.jpg' };
+  const f = app.tvmazeSeasonToFields(show, season, '进击的巨人');
+  ok(f.title === '进击的巨人3', '中文名 + 季号');
+  ok(f.originalTitle === '', '原文标题仍留空');
+  ok(f.externalId === '919', '其余字段不受影响');
+  // 未传中文名时退回英文
+  const en = app.tvmazeSeasonToFields(show, season);
+  ok(en.title === 'Attack on Titan3', '无中文名退回英文原名');
+  // 传空串等同未传
+  ok(app.tvmazeSeasonToFields(show, season, '').title === 'Attack on Titan3', '空串等同未传');
+  // 第 1 季中文名不加后缀
+  const s1 = app.tvmazeSeasonToFields(show, { number: 1, episodeOrder: 25, premiereDate: '2013-04-07', image: '' }, '进击的巨人');
+  ok(s1.title === '进击的巨人', '第 1 季中文名不加后缀');
+});
+
+test('观影J 选剧后再选季：标题用中文名（端到端）', async (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const d = w.document;
+  withFetch(w, (url) => {
+    if (url.indexOf('/search/shows') > -1) return { body: tvmazeSearchBody() };
+    if (url.indexOf('/seasons') > -1) return { body: tvmazeSeasonsBody() };
+    if (url.indexOf('/akas') > -1) return { body: tvmazeAkasBody() };
+    return null;
+  });
+  const btn = d.getElementById('tvmazeSearchBtn');
+  d.getElementById('tvmazeQuery').value = '进击的巨人';
+  btn.dispatchEvent(new w.Event('click', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40));
+  const results = d.querySelectorAll('#tvmazeResults .tvmaze-result');
+  ok(results.length === 2, '搜索出 2 条结果');
+  results[0].dispatchEvent(new w.Event('click', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 60));
+  const seasons = d.querySelectorAll('#tvmazeSeasons .tvmaze-season');
+  ok(seasons.length === 4, '季列表渲染 4 季');
+  seasons[2].dispatchEvent(new w.Event('click', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 60));
+  ok(d.getElementById('showTitle').value === '进击的巨人3', '标题最终为中文名 + 季号');
+  ok(d.getElementById('showOriginalTitle').value === '', '原文标题保持为空');
+  ok(d.getElementById('showYear').value === '2018', '年份被填入');
+  ok(d.getElementById('showSeasonEpisodes').value === '22', '集数被填入');
+});
+
+test('观影J 无中文名时退回英文并在状态行提示（端到端）', async (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.openAddShowModal();
+  const d = w.document;
+  withFetch(w, (url) => {
+    if (url.indexOf('/search/shows') > -1) return { body: tvmazeSearchBody() };
+    if (url.indexOf('/seasons') > -1) return { body: tvmazeSeasonsBody() };
+    if (url.indexOf('/akas') > -1) return { body: [{ name: 'Attack on Titan', country: { code: 'US' } }] };
+    return null;
+  });
+  d.getElementById('tvmazeQuery').value = 'Attack on Titan';
+  d.getElementById('tvmazeSearchBtn').dispatchEvent(new w.Event('click', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 40));
+  const first = d.querySelector('#tvmazeResults .tvmaze-result');
+  first.dispatchEvent(new w.Event('click', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 60));
+  const status = d.getElementById('tvmazeStatus');
+  ok(status.textContent.indexOf('暂无中文译名') > -1, '状态行给出中文名缺失的提示');
+  const seasons = d.querySelectorAll('#tvmazeSeasons .tvmaze-season');
+  ok(seasons.length === 4, '季列表照常渲染（不被提示打断）');
+  seasons[2].dispatchEvent(new w.Event('click', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 60));
+  ok(d.getElementById('showTitle').value === 'Attack on Titan3', '退回英文原名加季号');
 });
 
 test('观影J applyTvmazeFields 只填空、绝不覆盖已有内容', (w) => {
