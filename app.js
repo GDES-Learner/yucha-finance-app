@@ -505,39 +505,21 @@ function buildCatPicker(form) {
   });
 }
 
-/* --- 账户选择（分段控件，带图标与余额） --- */
+/* --- 账户选择（分段控件，带图标） --- */
 function buildAccountSegs(form) {
   const wrap = form.querySelector('.segs-account');
   if (!wrap) return;
-  const v = Store.getVault();
 
-  wrap.innerHTML = Object.entries(ACCOUNTS).map(([key, info]) => {
-    const bal = key === 'wechat' ? Store.wechatTotal() : (v[key] || 0);
-    return `
+  wrap.innerHTML = Object.entries(ACCOUNTS).map(([key, info]) => `
       <button type="button" class="seg${key === DEFAULT_ACCOUNT ? ' active' : ''}" data-account="${key}">
         ${icon(info.icon)}
         <span class="seg-name">${info.name}</span>
-        <span class="seg-bal">${money(bal)}</span>
-      </button>`;
-  }).join('');
+      </button>`).join('');
 
   // 账户切换
   wrap.querySelectorAll('.seg').forEach((s) => {
     s.addEventListener('click', () => {
       wrap.querySelectorAll('.seg').forEach((x) => x.classList.toggle('active', x === s));
-    });
-  });
-}
-
-/** 刷新所有账户选择器上的余额数字（记账后保持同步） */
-function refreshAccountBalances() {
-  const v = Store.getVault();
-  $$('.entry-form').forEach((form) => {
-    form.querySelectorAll('.segs-account .seg').forEach((s) => {
-      const key = s.dataset.account;
-      const bal = key === 'wechat' ? Store.wechatTotal() : (v[key] || 0);
-      const el = s.querySelector('.seg-bal');
-      if (el) el.textContent = money(bal);
     });
   });
 }
@@ -841,7 +823,6 @@ function openChangeAccount(id) {
     Store.save();
     closeModal();
     renderLedger();
-    refreshAccountBalances();
     if (state.page === 'vault') renderVault();
     toast(`已改为「${ACCOUNTS[picked].name}」，金额已同步调整`);
   });
@@ -1169,7 +1150,6 @@ function importData() {
         renderLedger();
         renderStats();
         renderVault();
-        refreshAccountBalances();
         toast(`已导入 ${Store.data.transactions.length} 笔记录`);
       } catch (err) {
         toast('导入失败：文件格式不正确', 'err');
@@ -1212,7 +1192,6 @@ $('#vaultGrid').addEventListener('click', (e) => {
     Store.save();
     closeModal();
     renderVault();
-    refreshAccountBalances();
     toast(`${info.name} 余额已更新`);
   });
   $('#vaultInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#modalOk').click(); });
@@ -1248,7 +1227,6 @@ function escapeHtml(str) {
 function renderLedger() {
   renderGauge();
   renderBillList(state.ledgerMonth);
-  refreshAccountBalances();
 }
 
 $('#ledgerMonth').addEventListener('change', (e) => {

@@ -608,7 +608,7 @@ select.f-category.fallback-native {
 .seg {
   flex: 1;
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-  padding: 10px 8px;
+  padding: 11px 8px;
   border: 1.5px solid rgba(16, 40, 30, 0.09);
   border-radius: var(--r-sm);
   background: var(--surface-2);
@@ -627,13 +627,6 @@ select.f-category.fallback-native {
   box-shadow: 0 0 0 3px rgba(23,160,115,.08);
 }
 .seg.active .icon { color: var(--brand-500); stroke-width: 2.1; }
-
-/* 账户余额小字（在账户选择器内） */
-.seg .seg-bal {
-  font-size: var(--fs-micro); color: var(--ink-400);
-  font-variant-numeric: tabular-nums; font-weight: 500;
-}
-.seg.active .seg-bal { color: var(--brand-600); }
 
 /* ===================== 12. 账单列表 ===================== */
 .list-head {
