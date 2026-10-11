@@ -306,9 +306,9 @@ async function restoreCloudSession() {
 /* ---------------------- 数据同步：整份账本快照 ---------------------- */
 /** 把本地账本推送到云端（upsert：有则更新，无则新建） */
 async function cloudPush(showToast) {
+  if (!isCloudSignedIn()) { if (showToast) toast('请先登录', 'err'); return false; }
   const cloud = ensureCloudClient();
   if (!cloud) { if (showToast) toast('云服务不可用', 'err'); return false; }
-  if (!isCloudSignedIn()) { if (showToast) toast('请先登录', 'err'); return false; }
 
   try {
     // 先查是否已有本行（RLS 保证只查到自己的）
@@ -349,9 +349,9 @@ async function cloudPush(showToast) {
 
 /** 从云端拉取并覆盖本地（云端为空时，改为把本地推上去做初始化） */
 async function cloudPull(showToast) {
+  if (!isCloudSignedIn()) { if (showToast) toast('请先登录', 'err'); return false; }
   const cloud = ensureCloudClient();
   if (!cloud) { if (showToast) toast('云服务不可用', 'err'); return false; }
-  if (!isCloudSignedIn()) { if (showToast) toast('请先登录', 'err'); return false; }
 
   try {
     const { data: rows, error } = await cloud.database

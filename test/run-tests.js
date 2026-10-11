@@ -30,12 +30,16 @@ function boot() {
   const { window } = dom;
 
   const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const cloudJs = fs.readFileSync(path.join(ROOT, 'cloud.js'), 'utf8');
+  // app.js 与 cloud.js 合并进同一 IIFE，cloud.js 的函数在 app.js 的 Store.save() 中按名调用
   const instrumented =
-    '(function(){\n' + appJs + '\n' +
+    '(function(){\n' + appJs + '\n' + cloudJs + '\n' +
     'window.__app = { Store, state, CATEGORIES, CATEGORY_ICON, CATEGORY_COLOR, ACCOUNTS, ' +
     'normalizeCategory, renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr, ' +
     'renderMonthlySummary, monthTotals, monthCategoryTotals, addMonths, ' +
-    'applyAppName, openRenameModal, DEFAULT_APP_NAME };\n' +
+    'applyAppName, openRenameModal, DEFAULT_APP_NAME, ' +
+    'CLOUD_PUBLIC_CONFIG, CLOUD_TABLE, ensureCloudClient, isCloudSignedIn, renderSyncEntry, ' +
+    'renderCloudCard, openLoginModal, cloudPush, cloudPull, scheduleAutoPush };\n' +
     '})();';
   window.eval(instrumented);
   window.document.dispatchEvent(new window.Event('DOMContentLoaded', { bubbles: true }));
@@ -716,6 +720,99 @@ test('需求10 左上角应用名称可修改并持久化', (w) => {
 });
 
 /* =========================================================================
+   需求 11：云同步（登录入口 / 离线兜底 / 失败路径 / 安全边界）
+   ========================================================================= */
+
+test('需求11 云同步入口与配置齐备', (w) => {
+  const doc = w.document;
+  const app = w.__app;
+
+  // 界面元素
+  ok(!!doc.getElementById('syncBtn'), '侧边栏存在「云同步」入口按钮');
+  ok(!!doc.getElementById('cloudSyncCard'), '金库页存在云同步卡片');
+  ok(!!doc.getElementById('cloudSyncBadge'), '云同步卡片有状态徽章');
+
+  // publicConfig 四个字段都在（都是可安全下发前端的值）
+  const cfg = app.CLOUD_PUBLIC_CONFIG;
+  ok(!!cfg.resourceId, 'publicConfig.resourceId 已配置');
+  ok(cfg.endpoint === 'https://yucha-finance-app.app.workbuddy.host', 'endpoint 为发布域名');
+  ok(!!cfg.oauthRelayBaseUrl, 'oauthRelayBaseUrl 已配置（Web 微信登录所需）');
+  ok(!!cfg.publishableKey, 'publishableKey 已配置');
+
+  // 数据表名
+  ok(app.CLOUD_TABLE === 'finance_state', '云数据表名为 finance_state');
+});
+
+test('需求11 SDK 未加载时降级为纯本地模式', (w) => {
+  const app = w.__app;
+  // 测试环境无 WorkBuddyCloud 全局 → ensureCloudClient 应返回 null，而不是抛错
+  ok(typeof w.WorkBuddyCloud === 'undefined', '测试环境确实没有 SDK（模拟离线/未加载）');
+  let threw = false;
+  let client = null;
+  try { client = app.ensureCloudClient(); } catch (e) { threw = true; }
+  ok(!threw, 'SDK 缺失时初始化不抛异常');
+  ok(client === null, 'SDK 缺失时返回 null（降级为纯本地模式）');
+  ok(app.isCloudSignedIn() === false, '未登录状态下 isCloudSignedIn() 为 false');
+});
+
+test('需求11 未登录时数据仍正常保存到本地（离线兜底）', (w) => {
+  const app = w.__app;
+  const Store = app.Store;
+  const before = Store.data.transactions.length;
+
+  Store.addTransaction({
+    id: 'cloud_local_1', type: 'expense', amount: 9.9, category: '奶茶',
+    account: 'wechat', date: app.todayStr(), remark: '离线记账', createdAt: Date.now(),
+  });
+  ok(Store.data.transactions.length === before + 1, '未登录也能正常记账');
+
+  const stored = JSON.parse(w.localStorage.getItem('life_assistant_v1'));
+  ok(stored.transactions.some((t) => t.id === 'cloud_local_1'), '数据已写入 localStorage');
+
+  // 未登录时自动上传钩子应直接返回，不产生任何请求
+  let threw = false;
+  try { app.scheduleAutoPush(); } catch (e) { threw = true; }
+  ok(!threw, '未登录时 scheduleAutoPush 安全空转');
+});
+
+test('需求11 未登录时上传/下载有明确提示而非静默失败', async (w) => {
+  const app = w.__app;
+  const pushRes = await app.cloudPush(true);
+  ok(pushRes === false, '未登录时 cloudPush 返回 false');
+  ok(w.document.getElementById('toast').textContent.includes('请先登录'), '上传给出「请先登录」提示');
+
+  const pullRes = await app.cloudPull(true);
+  ok(pullRes === false, '未登录时 cloudPull 返回 false');
+  ok(w.document.getElementById('toast').textContent.includes('请先登录'), '下载给出「请先登录」提示');
+});
+
+test('需求11 登录弹窗结构完整且校验先行', (w) => {
+  const app = w.__app;
+  app.openLoginModal();
+  const doc = w.document;
+
+  ok(!!doc.getElementById('cloudEmailInput'), '弹窗含邮箱输入框');
+  ok(!!doc.getElementById('cloudCodeInput'), '弹窗含验证码输入框');
+  ok(!!doc.getElementById('cloudSendBtn'), '弹窗含「获取验证码」按钮');
+  ok(!!doc.getElementById('modalOk'), '弹窗含「登录」提交按钮');
+  ok(doc.getElementById('cloudSendBtn').type === 'button',
+    '「获取验证码」为 type=button（避免触发表单提交）');
+
+  // 非法邮箱：不发请求，直接提示
+  const emailEl = doc.getElementById('cloudEmailInput');
+  emailEl.value = 'not-an-email';
+  click(w, doc.getElementById('cloudSendBtn'));
+  const hint = () => doc.getElementById('cloudHint').textContent;
+  ok(hint().includes('邮箱'), '非法邮箱给出格式提示');
+
+  // 邮箱合法但未获取验证码就提交：应提示先获取
+  emailEl.value = 'a@b.com';
+  doc.getElementById('cloudCodeInput').value = '123456';
+  click(w, doc.getElementById('modalOk'));
+  ok(hint().includes('获取验证码'), '未获取验证码就提交时提示先去获取');
+});
+
+/* =========================================================================
    运行
    ========================================================================= */
 console.log('个人生活助手 —— 端到端测试');
@@ -723,28 +820,32 @@ console.log('时间：' + new Date().toLocaleString('zh-CN'));
 
 const only = process.argv[2]; // 可指定只跑某个用例关键词
 
-tests.forEach((t, i) => {
-  if (only && !t.name.includes(only)) return;
-  section(`[${i + 1}] ${t.name}`);
-  let w;
-  try {
-    w = boot();
-    t.fn(w);
-  } catch (e) {
-    fail++;
-    failures.push(t.name + ' 抛出异常: ' + e.message);
-    console.log('  \u2717 用例异常: ' + e.message);
-    if (process.env.DEBUG) console.log(e.stack);
-  } finally {
-    if (w) w.close();
+/* 顺序执行，支持 async 用例（await 后再关闭 jsdom，避免断言丢失） */
+(async () => {
+  for (let i = 0; i < tests.length; i++) {
+    const t = tests[i];
+    if (only && !t.name.includes(only)) continue;
+    section(`[${i + 1}] ${t.name}`);
+    let w;
+    try {
+      w = boot();
+      await t.fn(w);
+    } catch (e) {
+      fail++;
+      failures.push(t.name + ' 抛出异常: ' + e.message);
+      console.log('  \u2717 用例异常: ' + e.message);
+      if (process.env.DEBUG) console.log(e.stack);
+    } finally {
+      if (w) w.close();
+    }
   }
-});
 
-console.log('\n========================================');
-console.log(`结果：通过 ${pass} / 失败 ${fail}`);
-if (failures.length) {
-  console.log('\n失败项：');
-  failures.forEach((f) => console.log('  - ' + f));
-}
-console.log('========================================');
-process.exit(fail ? 1 : 0);
+  console.log('\n========================================');
+  console.log(`结果：通过 ${pass} / 失败 ${fail}`);
+  if (failures.length) {
+    console.log('\n失败项：');
+    failures.forEach((f) => console.log('  - ' + f));
+  }
+  console.log('========================================');
+  process.exit(fail ? 1 : 0);
+})();
