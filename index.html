@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>个人生活助手</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- 左侧目录栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-logo">📒</span>
+        <span class="brand-name">个人生活助手</span>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-page="ledger">
+          <span class="nav-icon">📒</span><span class="nav-text">记账</span>
+        </button>
+        <button class="nav-item" data-page="stats">
+          <span class="nav-icon">📊</span><span class="nav-text">统计</span>
+        </button>
+        <button class="nav-item" data-page="vault">
+          <span class="nav-icon">🏦</span><span class="nav-text">金库</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <button class="nav-item add-func" id="addFuncBtn">
+          <span class="nav-icon">＋</span><span class="nav-text">添加功能</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- 右侧内容区 -->
+    <main class="content">
+
+      <!-- ============ 记账页 ============ -->
+      <section class="page active" id="page-ledger">
+        <header class="page-head">
+          <h1>记账</h1>
+          <div class="head-actions">
+            <button class="btn btn-ghost" id="editLimitBtn">⚙️ 修改上限</button>
+          </div>
+        </header>
+
+        <!-- 环形仪表盘 -->
+        <div class="card gauge-card">
+          <div class="gauge-wrap">
+            <svg class="gauge" viewBox="0 0 220 220">
+              <circle class="gauge-track" cx="110" cy="110" r="90" />
+              <circle class="gauge-fill" id="gaugeFill" cx="110" cy="110" r="90" />
+            </svg>
+            <div class="gauge-center">
+              <div class="gauge-pct" id="gaugePct">0%</div>
+              <div class="gauge-sub" id="gaugeSub">本月已花 / 上限</div>
+            </div>
+          </div>
+          <div class="gauge-info">
+            <div class="gauge-row">
+              <span class="gauge-label">本月已花</span>
+              <span class="gauge-value" id="gaugeSpent">¥0.00</span>
+            </div>
+            <div class="gauge-row">
+              <span class="gauge-label">资金上限</span>
+              <span class="gauge-value" id="gaugeLimit">¥1500.00</span>
+            </div>
+            <div class="gauge-divider"></div>
+            <div class="gauge-row highlight">
+              <span class="gauge-label">本月剩余可支配</span>
+              <span class="gauge-value big" id="gaugeRemain">¥1500.00</span>
+            </div>
+            <div class="gauge-state" id="gaugeState">正常</div>
+          </div>
+        </div>
+
+        <!-- 记账表单 -->
+        <div class="card">
+          <div class="tabs">
+            <button class="tab active" data-type="expense">支出</button>
+            <button class="tab" data-type="income">收入</button>
+          </div>
+
+          <form class="entry-form" id="entryForm" autocomplete="off">
+            <div class="form-row">
+              <label>金额</label>
+              <input type="number" id="fAmount" step="0.01" min="0" placeholder="0.00" required />
+            </div>
+
+            <div class="form-row" id="rowCategory">
+              <label>分类</label>
+              <select id="fCategory">
+                <option value="餐饮">餐饮</option>
+                <option value="交通">交通</option>
+                <option value="购物">购物</option>
+                <option value="娱乐">娱乐</option>
+                <option value="其它">其它</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <label id="labelAccount">扣款账户</label>
+              <div class="segmented" id="segsAccount">
+                <button type="button" class="seg" data-account="bank">银行</button>
+                <button type="button" class="seg" data-account="alipay">支付宝</button>
+                <button type="button" class="seg active" data-account="wechat">微信</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <label>日期</label>
+              <input type="date" id="fDate" />
+            </div>
+
+            <div class="form-row">
+              <label>备注</label>
+              <input type="text" id="fRemark" placeholder="选填" />
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="submitBtn">记录支出</button>
+          </form>
+        </div>
+
+        <!-- 账单列表 -->
+        <div class="card">
+          <div class="list-head">
+            <h2>账单明细</h2>
+            <input type="month" id="ledgerMonth" class="month-input" />
+          </div>
+          <div class="list-summary" id="listSummary"></div>
+          <ul class="bill-list" id="billList"></ul>
+        </div>
+      </section>
+
+      <!-- ============ 统计页 ============ -->
+      <section class="page" id="page-stats">
+        <header class="page-head">
+          <h1>统计</h1>
+          <div class="head-actions">
+            <input type="date" id="statsDate" class="month-input" />
+          </div>
+        </header>
+
+        <div class="card stats-card">
+          <h2 class="card-title" id="statsTitle">当日支出分类占比</h2>
+          <div class="stats-body">
+            <div class="donut-wrap">
+              <svg class="donut" id="donutSvg" viewBox="0 0 220 220"></svg>
+              <div class="donut-center">
+                <div class="donut-total" id="statsTotal">¥0.00</div>
+                <div class="donut-label">当日总支出</div>
+              </div>
+            </div>
+            <ul class="legend" id="statsLegend"></ul>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="list-head"><h2>当日账单</h2></div>
+          <ul class="bill-list" id="statsBillList"></ul>
+        </div>
+      </section>
+
+      <!-- ============ 金库页 ============ -->
+      <section class="page" id="page-vault">
+        <header class="page-head">
+          <h1>金库</h1>
+        </header>
+
+        <div class="card total-card">
+          <div class="total-label">总资产</div>
+          <div class="total-value" id="totalAssets">¥0.00</div>
+        </div>
+
+        <div class="vault-grid" id="vaultGrid"></div>
+
+        <div class="card">
+          <div class="list-head"><h2>账户流水</h2></div>
+          <ul class="bill-list" id="vaultBillList"></ul>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- 通用弹窗 -->
+  <div class="modal-mask" id="modalMask">
+    <div class="modal" id="modal"></div>
+  </div>
+
+  <!-- 轻提示 -->
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
