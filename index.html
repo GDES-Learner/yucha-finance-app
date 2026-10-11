@@ -30,6 +30,10 @@
           <span class="nav-icon"><i data-lucide="landmark"></i></span>
           <span class="nav-text">金库</span>
         </button>
+        <button class="nav-item" data-page="shows">
+          <span class="nav-icon"><i data-lucide="clapperboard"></i></span>
+          <span class="nav-text">观影</span>
+        </button>
       </nav>
 
       <div class="sidebar-foot">
@@ -295,6 +299,47 @@
           </div>
           <ul class="bill-list" id="vaultBillList"></ul>
         </div>
+      </section>
+
+      <!-- ============ 观影页 ============ -->
+      <section class="page" id="page-shows">
+        <header class="page-head">
+          <div>
+            <h1>观影</h1>
+            <div class="page-sub">收藏故事，记录每一段观影旅程</div>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-primary head-add" id="showAddBtn" type="button">
+              <i data-lucide="plus"></i>添加剧集
+            </button>
+          </div>
+        </header>
+
+        <div class="shows-toolbar">
+          <div class="show-search">
+            <i data-lucide="search"></i>
+            <input type="search" class="input" id="showSearch"
+                   placeholder="搜索标题 / 类型 / 简介" aria-label="搜索剧集" />
+          </div>
+          <select class="month-input" id="showSortSel" aria-label="排序方式">
+            <option value="updated">最近更新</option>
+            <option value="created">添加时间</option>
+            <option value="title">名称</option>
+          </select>
+        </div>
+
+        <div class="shows-stats" id="showsStats"></div>
+
+        <div class="shows-filters" id="showsFilters"></div>
+
+        <div class="shows-sections" id="showsSections"></div>
+
+        <p class="shows-link-row">
+          <a class="shows-link" id="showsLink" href="https://iioo.me/"
+             target="_blank" rel="noopener noreferrer">
+            <i data-lucide="external-link"></i>点此去看剧
+          </a>
+        </p>
       </section>
 
     </main>

@@ -382,6 +382,8 @@ async function cloudPull(showToast) {
     if (typeof renderLedger === 'function') renderLedger();
     if (typeof renderStats === 'function') renderStats();
     if (typeof renderVault === 'function') renderVault();
+    // 观影页（内部会异步回填本地封面；跨设备缺图时自动降级为占位）
+    if (typeof renderShows === 'function') renderShows();
 
     setLastSyncAt(rows[0].updated_at);
     if (showToast) toast('已从云端恢复');

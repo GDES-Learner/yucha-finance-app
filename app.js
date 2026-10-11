@@ -8,7 +8,7 @@
 
 /* ---------------------- 常量 ---------------------- */
 const STORE_KEY = 'life_assistant_v1';
-const DATA_VERSION = 3;
+const DATA_VERSION = 4;
 const DEFAULT_LIMIT = 1500;
 /** 左上角应用名称的默认值（用户可在界面随时修改，覆盖后存于 data.appName） */
 const DEFAULT_APP_NAME = '鱼叉的专属app';
@@ -58,6 +58,24 @@ function normalizeCategory(cat) {
 function isCounted(tx) {
   return !(tx && tx.counted === false);
 }
+
+/* ---------------------- 观影常量 ---------------------- */
+/** 观看状态：想看 / 在看 / 已看完 / 暂停 */
+const SHOW_STATUSES = ['want', 'watching', 'watched', 'paused'];
+const SHOW_STATUS_META = {
+  want:     { label: '想看',   icon: 'bookmark',        cls: 'st-want' },
+  watching: { label: '在看',   icon: 'play-circle',     cls: 'st-watching' },
+  watched:  { label: '已看完', icon: 'check-circle-2',  cls: 'st-watched' },
+  paused:   { label: '暂停',   icon: 'pause-circle',    cls: 'st-paused' },
+};
+/** 排序方式（key → 显示名） */
+const SHOW_SORTS = { updated: '最近更新', created: '添加时间', title: '名称' };
+/** 封面类型：外部 URL / 本地上传 / AI 生成（预留）/ 无 */
+const SHOW_COVER_TYPES = ['none', 'url', 'local', 'ai'];
+/** 本季进度区块最多先展示几张海报（超出折叠） */
+const SHOW_SECTION_LIMIT = 6;
+/** 单张封面上限（字节），超出拒绝写入 IndexedDB */
+const COVER_MAX_BYTES = 5 * 1024 * 1024;
 
 /* 账户顺序：微信 → 支付宝 → 银行（微信为默认付款方式）
    微信在金库中拆分为「零钱 / 零钱通」；记账扣款默认走「零钱」。 */
@@ -155,6 +173,98 @@ function catChip(cat, size) {
   return `<span class="cat-chip${size === 'lg' ? ' cat-lg' : ''}" style="--chip-bg:${bg};--chip-fg:${fg}">${icon(ic)}</span>`;
 }
 
+/* ---------------------- 观影数据规范化（纯函数，可单测） ---------------------- */
+const clampInt = (v, dft) => {
+  const n = Math.floor(Number(v));
+  return isFinite(n) ? n : dft;
+};
+const strOr = (v) => (typeof v === 'string' ? v : '');
+
+/** 把季/集规整为 ≥1 的整数 */
+function normSeasonEp(v, dft) {
+  return Math.max(1, clampInt(v, dft));
+}
+/** 可空正整数（未知 → null，绝不虚构） */
+function normOptPositiveInt(v) {
+  if (v == null || v === '') return null;
+  const n = Math.floor(Number(v));
+  return isFinite(n) && n >= 1 ? n : null;
+}
+/** 年份：非法 → null，合法 → clamp 1900–2100 */
+function normYear(v) {
+  if (v == null || v === '') return null;
+  const n = Math.floor(Number(v));
+  if (!isFinite(n)) return null;
+  return Math.min(2100, Math.max(1900, n));
+}
+/** 评分：非法 → null，合法 → clamp 0–10（保留一位小数不强制） */
+function normRating(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  return Math.min(10, Math.max(0, Math.round(n * 10) / 10));
+}
+/** 封面 URL 白名单：仅 http(s) 与 data:image，其余视为无效（防 XSS） */
+function safeCoverUrl(url) {
+  const s = String(url == null ? '' : url).trim();
+  if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^data:image\//i.test(s)) return s;
+  return '';
+}
+
+/** 规范化一条剧集；返回 false 表示该条非法应被丢弃 */
+function normalizeShow(s) {
+  if (!s || typeof s !== 'object') return false;
+  const title = strOr(s.title).trim();
+  if (!title) return false; // 标题必填
+
+  s.id = strOr(s.id) || 'show_' + uid();
+  s.title = title.slice(0, 120);
+  s.originalTitle = strOr(s.originalTitle).slice(0, 120);
+  s.year = normYear(s.year);
+  s.genre = strOr(s.genre).slice(0, 60);
+  s.status = SHOW_STATUSES.indexOf(s.status) > -1 ? s.status : 'want';
+
+  s.season = normSeasonEp(s.season, 1);
+  s.episode = normSeasonEp(s.episode, 1);
+  s.totalSeasons = normOptPositiveInt(s.totalSeasons);
+  s.currentSeasonEpisodes = normOptPositiveInt(s.currentSeasonEpisodes);
+
+  s.coverType = SHOW_COVER_TYPES.indexOf(s.coverType) > -1 ? s.coverType : 'none';
+  s.coverUrl = safeCoverUrl(s.coverUrl);
+  s.coverKey = strOr(s.coverKey);
+  // 一致性兜底：URL 型必须有合法 url，本地/AI 型必须有 key，否则降级
+  if (s.coverType === 'url' && !s.coverUrl) s.coverType = 'none';
+  if ((s.coverType === 'local' || s.coverType === 'ai') && !s.coverKey) s.coverType = 'none';
+
+  s.externalId = strOr(s.externalId);
+  s.summary = strOr(s.summary).slice(0, 2000);
+  s.rating = normRating(s.rating);
+  s.note = strOr(s.note).slice(0, 2000);
+
+  s.createdAt = Number(s.createdAt) || Date.now();
+  s.updatedAt = Number(s.updatedAt) || s.createdAt;
+  s.lastWatchedAt = Number(s.lastWatchedAt) || null;
+  s.finishedAt = /^\d{4}-\d{2}-\d{2}$/.test(strOr(s.finishedAt)) ? s.finishedAt : '';
+  return true;
+}
+
+/** 规范化一条观看记录；返回 false 表示应被丢弃 */
+function normalizeWatchLog(l) {
+  if (!l || typeof l !== 'object') return false;
+  const showId = strOr(l.showId);
+  if (!showId) return false;
+  l.id = strOr(l.id) || 'log_' + uid();
+  l.showId = showId;
+  l.at = Number(l.at) || Date.now();
+  l.kind = ['progress', 'status', 'finish'].indexOf(l.kind) > -1 ? l.kind : 'progress';
+  l.season = normOptPositiveInt(l.season);
+  l.episode = normOptPositiveInt(l.episode);
+  l.note = strOr(l.note).slice(0, 200);
+  return true;
+}
+
 /* ---------------------- 数据层 ---------------------- */
 const Store = {
   data: null,
@@ -190,7 +300,7 @@ const Store = {
     return this.data;
   },
 
-  /** 数据版本迁移：v1→v2（餐饮→吃饭）；v2→v3（微信拆为零钱/零钱通） */
+  /** 数据版本迁移：v1→v2（餐饮→吃饭）；v2→v3（微信拆为零钱/零钱通）；v3→v4（新增观影模块） */
   migrate() {
     const v = Number(this.data.version || 1);
 
@@ -211,6 +321,12 @@ const Store = {
         bank: numOr(old.bank, 0),
       };
       // 交易记录里的 account 保持 'wechat' 不变（默认扣零钱）
+    }
+
+    if (v < 4) {
+      // v3 → v4：新增「观影」模块，老数据补空数组；不改动 transactions / budgets / vault
+      if (!Array.isArray(this.data.shows)) this.data.shows = [];
+      if (!Array.isArray(this.data.watchLogs)) this.data.watchLogs = [];
     }
 
     this.data.version = DATA_VERSION;
@@ -251,6 +367,14 @@ const Store = {
 
     if (!Array.isArray(this.data.customNav)) this.data.customNav = [];
 
+    // 观影：剧集数组（非法条目直接丢弃）+ 观看记录（孤儿记录一并清理）
+    if (!Array.isArray(this.data.shows)) this.data.shows = [];
+    this.data.shows = this.data.shows.filter((s) => normalizeShow(s));
+    if (!Array.isArray(this.data.watchLogs)) this.data.watchLogs = [];
+    this.data.watchLogs = this.data.watchLogs.filter((l) => normalizeWatchLog(l));
+    const showIds = new Set(this.data.shows.map((s) => s.id));
+    this.data.watchLogs = this.data.watchLogs.filter((l) => showIds.has(l.showId));
+
     // 应用名称兜底：缺失 / 非字符串 / 空串 → 回落到默认名
     if (typeof this.data.appName !== 'string' || !this.data.appName.trim()) {
       this.data.appName = DEFAULT_APP_NAME;
@@ -267,6 +391,8 @@ const Store = {
       budgets: {},                    // { "YYYY-MM": limit }
       vault: { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 },
       customNav: [],                  // 预留扩展功能
+      shows: [],                      // 观影：剧集
+      watchLogs: [],                  // 观影：观看记录
     };
     this.save();
   },
@@ -340,6 +466,117 @@ const Store = {
     const v = this.data.vault;
     return round2(v.wechat_change + v.wechat_lct + v.alipay + v.bank);
   },
+
+  /* --- 观影：剧集 --- */
+  getShows() { return this.data.shows; },
+  getShow(id) { return this.data.shows.find((s) => s.id === id); },
+
+  addShow(show) {
+    const s = Object.assign({}, show);
+    if (!normalizeShow(s)) return null; // title 为空则拒绝
+    this.data.shows.push(s);
+    this.save();
+    return s;
+  },
+
+  updateShow(id, patch) {
+    const s = this.getShow(id);
+    if (!s) return null;
+    Object.assign(s, patch);
+    if (!normalizeShow(s)) return null; // 清空标题等非法改动 → 回退（已被就地改写，保守直接返回）
+    s.updatedAt = Date.now();
+    this.save();
+    return s;
+  },
+
+  removeShow(id) {
+    const i = this.data.shows.findIndex((s) => s.id === id);
+    if (i < 0) return false;
+    const [removed] = this.data.shows.splice(i, 1);
+    // 级联删除该剧集的所有观看记录
+    this.data.watchLogs = this.data.watchLogs.filter((l) => l.showId !== id);
+    // 异步清理本地封面（IndexedDB 不可用时是空操作）
+    if (removed && removed.coverKey && typeof coverDelete === 'function') {
+      coverDelete(removed.coverKey);
+    }
+    this.save();
+    return true;
+  },
+
+  /** 写入观看进度：同时刷新 lastWatchedAt / updatedAt 并留痕 */
+  updateProgress(id, season, episode, opts) {
+    const s = this.getShow(id);
+    if (!s) return null;
+    s.season = normSeasonEp(season, s.season);
+    s.episode = normSeasonEp(episode, s.episode);
+    const now = Date.now();
+    s.lastWatchedAt = now;
+    s.updatedAt = now;
+    // 首次推进进度自动进入「在看」
+    if (s.status === 'want') s.status = 'watching';
+    this.addWatchLog({
+      showId: id, kind: 'progress',
+      season: s.season, episode: s.episode,
+      note: (opts && opts.note) || '',
+    });
+    this.save();
+    return s;
+  },
+
+  /** 只改状态，绝不动进度与资料 */
+  changeShowStatus(id, status) {
+    const s = this.getShow(id);
+    if (!s || SHOW_STATUSES.indexOf(status) < 0) return null;
+    const from = s.status;
+    s.status = status;
+    s.updatedAt = Date.now();
+    this.addWatchLog({
+      showId: id, kind: 'status', season: s.season, episode: s.episode,
+      note: `${SHOW_STATUS_META[from] ? SHOW_STATUS_META[from].label : from} → ${SHOW_STATUS_META[status].label}`,
+    });
+    this.save();
+    return s;
+  },
+
+  /** 标记已看完：保留全部资料，可补日期 / 评分 / 观后感 */
+  finishShow(id, opts) {
+    const s = this.getShow(id);
+    if (!s) return null;
+    const o = opts || {};
+    s.status = 'watched';
+    s.finishedAt = /^\d{4}-\d{2}-\d{2}$/.test(o.date || '') ? o.date : todayStr();
+    if (o.rating != null && o.rating !== '') s.rating = normRating(o.rating);
+    if (typeof o.note === 'string' && o.note) s.note = o.note.slice(0, 2000);
+    const now = Date.now();
+    s.updatedAt = now;
+    s.lastWatchedAt = s.lastWatchedAt || now;
+    this.addWatchLog({
+      showId: id, kind: 'finish', season: s.season, episode: s.episode,
+      note: '标记为已看完',
+    });
+    this.save();
+    return s;
+  },
+
+  /** 内部：追加一条观看记录（补 id / at） */
+  addWatchLog(log) {
+    if (!Array.isArray(this.data.watchLogs)) this.data.watchLogs = [];
+    const l = Object.assign({ id: 'log_' + uid(), at: Date.now() }, log || {});
+    if (!normalizeWatchLog(l)) return;
+    this.data.watchLogs.push(l);
+    // 只保留最近 500 条，防止无限膨胀（但绝不删除非本剧集的记录）
+    if (this.data.watchLogs.length > 500) {
+      this.data.watchLogs = this.data.watchLogs.slice(-500);
+    }
+  },
+
+  /** 某剧集的观看记录（倒序，默认取最近 limit 条） */
+  getWatchLogs(showId, limit) {
+    const list = this.data.watchLogs
+      .filter((l) => l.showId === showId)
+      .sort((a, b) => b.at - a.at);
+    return limit ? list.slice(0, limit) : list;
+  },
 };
 
 /* ---------------------- 状态 ---------------------- */
@@ -351,6 +588,12 @@ const state = {
   statsDate: todayStr(),
   summaryYear: new Date().getFullYear(), // 月度总结浏览年份（动态当年）
   summaryMonth: monthStr(),              // 月度总结选中月份 'YYYY-MM'
+  // 观影页 UI 状态（切页不重置，保持用户筛选）
+  showStatus: 'all',                     // all | want | watching | watched | paused
+  showQuery: '',
+  showSort: 'updated',
+  showExpanded: { continue: false, watching: false, want: false, watched: false, paused: false },
+  showSectionLimit: SHOW_SECTION_LIMIT,
 };
 
 /* ---------------------- Toast ---------------------- */
@@ -381,6 +624,1071 @@ $('#modalMask').addEventListener('click', (e) => { if (e.target.id === 'modalMas
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
 /* =========================================================================
+   观影 —— 纯函数（筛选 / 排序 / 分组 / 校验 / 进度运算，可单测）
+   ========================================================================= */
+
+/** 校验季 / 集：必须是 ≥1 的整数；若本季总集数已知且集数超出则判无效 */
+function validateSeasonEpisode(season, episode, curEpisodes) {
+  const s = Math.floor(Number(season));
+  const e = Math.floor(Number(episode));
+  if (!isFinite(s) || s < 1) return { ok: false, season: null, episode: null, error: '季数需为 ≥1 的整数' };
+  if (!isFinite(e) || e < 1) return { ok: false, season: null, episode: null, error: '集数需为 ≥1 的整数' };
+  const cap = normOptPositiveInt(curEpisodes);
+  if (cap != null && e > cap) {
+    return { ok: false, season: s, episode: e, error: `本季共 ${cap} 集，集数不能超过 ${cap}` };
+  }
+  return { ok: true, season: s, episode: e, error: '' };
+}
+
+/** 筛选：状态 + 关键词（匹配标题 / 原名 / 类型 / 简介），两者可叠加 */
+function filterShows(list, status, query) {
+  const q = String(query || '').trim().toLowerCase();
+  return (list || []).filter((s) => {
+    if (status && status !== 'all' && s.status !== status) return false;
+    if (!q) return true;
+    const hay = [s.title, s.originalTitle, s.genre, s.summary]
+      .map((x) => String(x || '').toLowerCase()).join(' ');
+    return hay.indexOf(q) > -1;
+  });
+}
+
+/** 排序：返回新数组（不修改原数组） */
+function sortShows(list, sortKey) {
+  const arr = (list || []).slice();
+  if (sortKey === 'created') {
+    arr.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  } else if (sortKey === 'title') {
+    arr.sort((a, b) => String(a.title).localeCompare(String(b.title), 'zh'));
+  } else {
+    // 默认 updated：最近更新在前
+    arr.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  }
+  return arr;
+}
+
+/** 分区：继续观看（在看且有观看记录）/ 在看 / 想看 / 已看完 / 暂停 */
+function groupShows(list) {
+  const src = list || [];
+  const g = { continue: [], watching: [], want: [], watched: [], paused: [] };
+  src.forEach((s) => {
+    if (s.status === 'watching' && s.lastWatchedAt) g.continue.push(s);
+    else if (s.status === 'watching') g.watching.push(s);
+    else if (s.status === 'want') g.want.push(s);
+    else if (s.status === 'watched') g.watched.push(s);
+    else if (s.status === 'paused') g.paused.push(s);
+  });
+  // 各区块按最近更新排序
+  Object.keys(g).forEach((k) => { g[k] = sortShows(g[k], 'updated'); });
+  return g;
+}
+
+/** 进度 +1：已知本季总集数且为最后一集 → 进下一季；总集数未知则只 +1（不进季、不判断季终） */
+function incEpisode(show) {
+  if (!show) return null;
+  const cap = normOptPositiveInt(show.currentSeasonEpisodes);
+  let season = normSeasonEp(show.season, 1);
+  let episode = normSeasonEp(show.episode, 1);
+  if (cap != null && episode >= cap) {
+    season += 1;
+    episode = 1;
+    // 进入新一季时，若已知总季数且已超出，则不越界（停留在当前季最后一集）
+    const total = normOptPositiveInt(show.totalSeasons);
+    if (total != null && season > total) {
+      season = total;
+      episode = cap;
+    }
+  } else {
+    episode += 1;
+  }
+  return { season, episode };
+}
+
+/** 进度 -1：episode=1 且 season>1 → 回上一季（集数未知设 1）；带下限保护 */
+function decEpisode(show) {
+  if (!show) return null;
+  let season = normSeasonEp(show.season, 1);
+  let episode = normSeasonEp(show.episode, 1);
+  if (episode > 1) {
+    episode -= 1;
+  } else if (season > 1) {
+    season -= 1;
+    const cap = normOptPositiveInt(show.currentSeasonEpisodes);
+    episode = cap != null ? cap : 1;
+  } else {
+    return { season: 1, episode: 1 }; // 已在最开始
+  }
+  return { season, episode };
+}
+
+/** 进度文案：已知本季总集数 → 「第 5 / 10 集」；未知 → 「第 5 集」；非第一季 → 带 S2 前缀 */
+function showProgressText(show) {
+  if (!show) return '';
+  const s = normSeasonEp(show.season, 1);
+  const e = normSeasonEp(show.episode, 1);
+  const cap = normOptPositiveInt(show.currentSeasonEpisodes);
+  const base = cap != null ? `第 ${e} / ${cap} 集` : `第 ${e} 集`;
+  return s > 1 ? `S${s} · ${base}` : base;
+}
+
+/** 进度百分比：总集数未知返回 null（渲染层据此不画进度条） */
+function showProgressPercent(show) {
+  if (!show) return null;
+  const cap = normOptPositiveInt(show.currentSeasonEpisodes);
+  if (cap == null) return null;
+  const e = normSeasonEp(show.episode, 1);
+  return Math.min(100, Math.round((e / cap) * 100));
+}
+
+/** 详情页/编辑页进度输入是否应提示越界 */
+function progressWarn(show) {
+  if (!show) return '';
+  const cap = normOptPositiveInt(show.currentSeasonEpisodes);
+  const e = normSeasonEp(show.episode, 1);
+  if (cap != null && e > cap) return `集数（${e}）已超出本季总集数（${cap}）`;
+  const total = normOptPositiveInt(show.totalSeasons);
+  if (total != null && normSeasonEp(show.season, 1) > total) {
+    return `季数（${show.season}）已超出总季数（${total}）`;
+  }
+  return '';
+}
+
+/* =========================================================================
+   观影 —— 封面存储（IndexedDB，不可用时自动降级为内存 Map）
+   所有 API 均返回 Promise 且「永不 reject」，失败一律返回 null / false。
+   ========================================================================= */
+const COVER_DB_NAME = 'life_assistant_media';
+const COVER_DB_VERSION = 1;
+const COVER_STORE = 'covers';
+
+let coverDbInstance = null;       // 打开后的 IDBDatabase 单例
+let coverDbFailed = false;        // 打开失败后不再重试
+const coverMemStore = new Map();  // 降级存储：key -> Blob/File
+const coverUrlCache = new Map();  // key -> objectURL（避免重复创建导致泄漏）
+let coverToken = 0;               // 渲染轮次标记，用于异步回填防竞态
+
+/** 同步探测当前环境是否具备 IndexedDB */
+function coverDbAvailable() {
+  try {
+    return typeof indexedDB !== 'undefined' && indexedDB !== null;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 打开（或创建）封面数据库；失败返回 null（永不 reject） */
+function coverDbOpen() {
+  return new Promise((resolve) => {
+    if (!coverDbAvailable() || coverDbFailed) return resolve(null);
+    if (coverDbInstance) return resolve(coverDbInstance);
+    let req;
+    try {
+      req = indexedDB.open(COVER_DB_NAME, COVER_DB_VERSION);
+    } catch (e) {
+      coverDbFailed = true;
+      return resolve(null);
+    }
+    if (!req || typeof req.addEventListener !== 'function') {
+      coverDbFailed = true;
+      return resolve(null);
+    }
+    req.addEventListener('upgradeneeded', () => {
+      try {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(COVER_STORE)) db.createObjectStore(COVER_STORE);
+      } catch (e) { /* 忽略升级异常，后续写入自然失败并降级 */ }
+    });
+    req.addEventListener('success', () => {
+      coverDbInstance = req.result;
+      resolve(coverDbInstance);
+    });
+    req.addEventListener('error', () => { coverDbFailed = true; resolve(null); });
+    req.addEventListener('blocked', () => { coverDbFailed = true; resolve(null); });
+  });
+}
+
+/** 事务包装：把一次读写包进 Promise，出错/缺能力一律走 fail 值 */
+function coverTx(mode, fn, fail) {
+  return coverDbOpen().then((db) => {
+    if (!db) return fail;
+    return new Promise((resolve) => {
+      let tx;
+      try {
+        tx = db.transaction(COVER_STORE, mode);
+      } catch (e) {
+        return resolve(fail);
+      }
+      let result = fail;
+      try {
+        const store = tx.objectStore(COVER_STORE);
+        const req = fn(store);
+        if (req && typeof req.addEventListener === 'function') {
+          req.addEventListener('success', () => { if (req.result !== undefined) result = req.result; });
+          req.addEventListener('error', () => { result = fail; });
+        }
+      } catch (e) {
+        return resolve(fail);
+      }
+      tx.addEventListener('complete', () => resolve(result === undefined ? fail : result));
+      tx.addEventListener('abort', () => resolve(fail));
+      tx.addEventListener('error', () => resolve(fail));
+    });
+  }).catch(() => fail);
+}
+
+/** 保存封面（key + Blob/File）→ true / false */
+function coverSave(key, blob) {
+  if (!key || !blob) return Promise.resolve(false);
+  if (!coverDbAvailable()) {
+    coverMemStore.set(key, blob);
+    return Promise.resolve(false);
+  }
+  return coverTx('readwrite', (store) => store.put(blob, key), false)
+    .then((r) => r !== false);
+}
+
+/** 读取封面 → Blob / null（IDB 不可用时回落到内存 Map） */
+function coverGet(key) {
+  if (!key) return Promise.resolve(null);
+  if (!coverDbAvailable()) return Promise.resolve(coverMemStore.get(key) || null);
+  return coverTx('readonly', (store) => store.get(key), null);
+}
+
+/** 删除封面 → true / false */
+function coverDelete(key) {
+  if (!key) return Promise.resolve(false);
+  if (!coverDbAvailable()) { coverMemStore.delete(key); return Promise.resolve(false); }
+  // 同时释放可能存在的 objectURL，避免内存泄漏
+  revokeCoverURL(key);
+  return coverTx('readwrite', (store) => store.delete(key), false)
+    .then((r) => r !== false);
+}
+
+/** 释放某个 key 的 objectURL 并从缓存移除 */
+function revokeCoverURL(key) {
+  const url = coverUrlCache.get(key);
+  if (url && typeof URL !== 'undefined' && URL.revokeObjectURL) {
+    try { URL.revokeObjectURL(url); } catch (e) { /* 忽略 */ }
+  }
+  coverUrlCache.delete(key);
+}
+
+/** 读取封面并生成可用的 objectURL → string / null（带缓存） */
+function coverGetURL(key) {
+  if (!key) return Promise.resolve(null);
+  if (coverUrlCache.has(key)) return Promise.resolve(coverUrlCache.get(key));
+  return coverGet(key).then((blob) => {
+    if (!blob) return null;
+    try {
+      if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return null;
+      const url = URL.createObjectURL(blob);
+      coverUrlCache.set(key, url);
+      return url;
+    } catch (e) {
+      return null;
+    }
+  }).catch(() => null);
+}
+
+/** 校验并保存用户选择的图片文件 → { ok, key, error } */
+function saveCoverFile(file) {
+  return new Promise((resolve) => {
+    if (!file) return resolve({ ok: false, error: '未选择文件' });
+    if (!/^image\//i.test(file.type || '')) {
+      return resolve({ ok: false, error: '请选择图片文件（jpg / png / webp 等）' });
+    }
+    if (file.size && file.size > COVER_MAX_BYTES) {
+      return resolve({ ok: false, error: '图片过大，请选择 5MB 以内的图片' });
+    }
+    const key = 'img_' + uid();
+    // IDB 不可用时 coverSave 会写入内存 Map，同样返回 ok（本机可用）
+    const store = coverDbAvailable() ? coverSave(key, file) : Promise.resolve(coverMemStore.set(key, file) && false);
+    store.then(() => resolve({ ok: true, key, error: '' }));
+  });
+}
+
+/** 异步回填本地封面：扫描 [data-cover-type="local"|"ai"][data-cover-key] 并设置 src */
+function hydrateCovers(root) {
+  if (!root) return;
+  const token = ++coverToken;
+  const nodes = root.querySelectorAll('[data-cover-type="local"][data-cover-key], [data-cover-type="ai"][data-cover-key]');
+  Array.prototype.forEach.call(nodes, (img) => {
+    const key = img.getAttribute('data-cover-key');
+    if (!key) return;
+    const apply = (url) => {
+      if (coverToken !== token) return;        // 已被新一轮渲染取代，丢弃
+      if (!url) { img.classList.add('cover-failed'); return; }
+      img.src = url;
+      img.setAttribute('data-loaded', '1');
+    };
+    if (coverUrlCache.has(key)) { apply(coverUrlCache.get(key)); return; }
+    coverGetURL(key).then(apply).catch(() => apply(null));
+  });
+}
+
+/* =========================================================================
+   观影 —— 渲染层
+   ========================================================================= */
+
+/** 状态徽标（右上角） */
+function showBadgeHtml(show) {
+  const m = SHOW_STATUS_META[show.status] || SHOW_STATUS_META.want;
+  return `<span class="poster-badge ${m.cls}">${icon(m.icon)}${m.label}</span>`;
+}
+
+/** 封面占位（无封面 / 加载中） */
+function coverPlaceholder() {
+  return `<span class="cover-ph">${icon('clapperboard')}</span>`;
+}
+
+/** 封面元素：外部 URL 直接给 src；本地 / AI 只带 data 属性由 hydrateCovers 异步回填 */
+function coverImgHtml(show) {
+  const alt = escapeHtml(show.title);
+  if (show.coverType === 'url' && show.coverUrl) {
+    return `<img class="cover-img" src="${escapeHtml(show.coverUrl)}" alt="${alt}" loading="lazy" data-loaded="1" />`;
+  }
+  if ((show.coverType === 'local' || show.coverType === 'ai') && show.coverKey) {
+    return `<img class="cover-img" alt="${alt}" loading="lazy"
+      data-cover-type="${show.coverType}" data-cover-key="${escapeHtml(show.coverKey)}" />`;
+  }
+  return coverPlaceholder();
+}
+
+/** 进度条（总集数未知则不画） */
+function showProgressBarHtml(show) {
+  const pct = showProgressPercent(show);
+  if (pct == null) return '';
+  return `<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`;
+}
+
+/** 单张海报卡 */
+function showCardHtml(show) {
+  const warn = progressWarn(show);
+  const sub = [show.year, show.genre].filter(Boolean).map(escapeHtml).join(' · ');
+  const showProgress = show.status === 'watching' || show.status === 'paused';
+  return `
+    <article class="poster-card" data-id="${escapeHtml(show.id)}" role="button" tabindex="0">
+      <div class="poster-media">
+        ${coverImgHtml(show)}
+        ${showBadgeHtml(show)}
+      </div>
+      <div class="poster-body">
+        <h3 class="poster-title" title="${escapeHtml(show.title)}">${escapeHtml(show.title)}</h3>
+        <div class="poster-sub">${sub || '&nbsp;'}</div>
+        ${showProgress ? `
+          ${showProgressBarHtml(show)}
+          <div class="progress-text">${icon('clock')}${escapeHtml(showProgressText(show))}</div>
+        ` : ''}
+        ${warn ? `<div class="progress-warn">${icon('alert-triangle')}${escapeHtml(warn)}</div>` : ''}
+        <div class="poster-acts">
+          ${show.status === 'watching' ? `
+            <button class="btn-mini" data-act="continue" data-id="${escapeHtml(show.id)}" title="看下一集">
+              ${icon('play')}下一集
+            </button>` : ''}
+          <button class="btn-mini" data-act="edit" data-id="${escapeHtml(show.id)}" title="编辑">${icon('pencil')}</button>
+        </div>
+      </div>
+    </article>`;
+}
+
+/** 单个区块（标题 + 网格 + 展开/收起） */
+function showSectionHtml(key, list, iconName, title) {
+  if (!list.length) return '';
+  const expanded = !!state.showExpanded[key];
+  const limit = state.showSectionLimit;
+  const visible = expanded ? list : list.slice(0, limit);
+  const needToggle = list.length > limit;
+  return `
+    <section class="shows-section" data-section="${key}">
+      <div class="shows-section-head">
+        <h2>${icon(iconName)}${escapeHtml(title)}<span class="sec-count">${list.length}</span></h2>
+        ${needToggle ? `<button class="link-all" data-act="${expanded ? 'collapse' : 'view-all'}" data-section="${key}">
+          ${expanded ? '收起' : `查看全部 ${list.length}`}${icon(expanded ? 'chevron-up' : 'chevron-right')}
+        </button>` : ''}
+      </div>
+      <div class="poster-grid">${visible.map(showCardHtml).join('')}</div>
+    </section>`;
+}
+
+/** 统计概览 */
+function renderShowsStats() {
+  const el = $('#showsStats');
+  if (!el) return;
+  const all = Store.getShows();
+  const count = (st) => all.filter((s) => s.status === st).length;
+  const items = [
+    { st: 'watching', label: '在看' },
+    { st: 'want', label: '想看' },
+    { st: 'watched', label: '已看完' },
+    { st: 'paused', label: '暂停' },
+  ];
+  el.innerHTML = items.map((it) => `
+    <div class="show-stat">
+      <div class="show-stat-num">${count(it.st)}</div>
+      <div class="show-stat-label">${icon(SHOW_STATUS_META[it.st].icon)}${it.label}</div>
+    </div>`).join('');
+}
+
+/** 筛选标签（含各状态数量） */
+function renderShowsFilters() {
+  const el = $('#showsFilters');
+  if (!el) return;
+  const all = Store.getShows();
+  const tabs = [{ st: 'all', label: '全部', n: all.length }].concat(
+    SHOW_STATUSES.map((st) => ({ st, label: SHOW_STATUS_META[st].label, n: all.filter((s) => s.status === st).length }))
+  );
+  el.innerHTML = tabs.map((t) => `
+    <button class="chip${state.showStatus === t.st ? ' active' : ''}" data-status="${t.st}">
+      ${escapeHtml(t.label)}<b>${t.n}</b>
+    </button>`).join('');
+}
+
+/** 空态 */
+function renderEmptyShows() {
+  return `
+    <div class="empty">
+      <span class="empty-icon">${icon('clapperboard')}</span>
+      <span class="empty-title">还没有任何剧集</span>
+      <span class="empty-desc">点击右上角「添加剧集」，粘贴海报链接开始收藏</span>
+    </div>`;
+}
+
+/** 观影页总渲染入口 */
+function renderShows() {
+  const box = $('#showsSections');
+  if (!box) return;
+
+  // 概览与筛选始终刷新
+  renderShowsStats();
+  renderShowsFilters();
+
+  // 同步排序下拉的当前值（切页回来保持一致）
+  const sortSel = $('#showSortSel');
+  if (sortSel && sortSel.value !== state.showSort) sortSel.value = state.showSort;
+  const searchEl = $('#showSearch');
+  if (searchEl && searchEl.value !== state.showQuery) searchEl.value = state.showQuery;
+
+  const all = Store.getShows();
+  if (!all.length) {
+    box.innerHTML = renderEmptyShows();
+    hydrateCovers(box);
+    return;
+  }
+
+  const filtered = sortShows(filterShows(all, state.showStatus, state.showQuery), state.showSort);
+  if (!filtered.length) {
+    box.innerHTML = `
+      <div class="empty">
+        <span class="empty-icon">${icon('search-x')}</span>
+        <span class="empty-title">没有匹配的剧集</span>
+        <span class="empty-desc">换个关键词或切换筛选条件试试</span>
+      </div>`;
+    hydrateCovers(box);
+    return;
+  }
+
+  // 处于「全部」且无搜索时按状态分区；否则平铺一个结果区块
+  const isBrowseAll = state.showStatus === 'all' && !state.showQuery.trim();
+  let html = '';
+  if (isBrowseAll) {
+    const g = groupShows(all);
+    html += showSectionHtml('continue', g.continue, 'play-circle', '继续观看');
+    html += showSectionHtml('watching', g.watching, 'tv', '在看');
+    html += showSectionHtml('want', g.want, 'bookmark', '想看清单');
+    html += showSectionHtml('paused', g.paused, 'pause-circle', '暂停');
+    html += showSectionHtml('watched', g.watched, 'check-circle-2', '已看完');
+  } else {
+    html += `<section class="shows-section">
+      <div class="shows-section-head"><h2>${icon('list')}筛选结果<span class="sec-count">${filtered.length}</span></h2></div>
+      <div class="poster-grid">${filtered.map(showCardHtml).join('')}</div>
+    </section>`;
+  }
+  box.innerHTML = html || renderEmptyShows();
+  hydrateCovers(box);
+}
+
+/* =========================================================================
+   观影 —— 封面选择器（URL / 本地 / AI 预留）
+   ========================================================================= */
+let coverPickerState = { type: 'none', url: '', key: '', previewUrl: '' };
+
+/** 构建封面选择器（返回 HTML；事件在 openModal 后由 bindCoverPicker 绑定） */
+function coverPickerHtml(cur) {
+  const type = cur && cur.coverType ? cur.coverType : 'none';
+  const url = (cur && cur.coverUrl) || '';
+  const key = (cur && cur.coverKey) || '';
+  const noCoverActive = type === 'none';
+  const urlActive = type === 'url';
+  const localActive = type === 'local' || type === 'ai';
+  return `
+    <div class="cover-picker" id="coverPicker">
+      <div class="field-label">封面</div>
+      <div class="cover-tabs">
+        <button type="button" class="cover-tab${noCoverActive ? ' active' : ''}" data-cover-tab="none">无封面</button>
+        <button type="button" class="cover-tab${urlActive ? ' active' : ''}" data-cover-tab="url">图片链接</button>
+        <button type="button" class="cover-tab${localActive ? ' active' : ''}" data-cover-tab="local">本地上传</button>
+        <button type="button" class="cover-tab" data-cover-tab="ai">AI 生成</button>
+      </div>
+
+      <div class="cover-pane" data-cover-pane="none"${noCoverActive ? '' : ' hidden'}>
+        <p class="cover-hint">不使用封面，卡片显示渐变占位图。</p>
+      </div>
+
+      <div class="cover-pane" data-cover-pane="url"${urlActive ? '' : ' hidden'}>
+        <input class="input" id="coverUrlInput" type="url" placeholder="粘贴海报图片链接（https://...）"
+               value="${escapeHtml(url)}" />
+        <p class="cover-hint">右键网图 → 复制图片地址，粘贴到这里即可。</p>
+        <div class="cover-preview" id="coverUrlPreview"></div>
+      </div>
+
+      <div class="cover-pane" data-cover-pane="local"${localActive ? '' : ' hidden'}>
+        <label class="cover-drop" for="coverFileInput">
+          ${icon('upload')}选择本地图片
+        </label>
+        <input type="file" id="coverFileInput" accept="image/*" hidden />
+        <p class="cover-hint">支持 jpg / png / webp，5MB 以内。图片保存在本机（不上传云端）。</p>
+        <div class="cover-preview" id="coverLocalPreview"></div>
+      </div>
+
+      <div class="cover-pane cover-ai-pane" data-cover-pane="ai" hidden>
+        <p class="cover-hint">
+          ${icon('sparkles')}AI 生成封面为预留能力，当前尚未接入生成服务。
+        </p>
+        <p class="cover-hint muted">你可以自行生成好图片后，切到「本地上传」选择该文件即可。</p>
+        <button type="button" class="btn btn-ghost" disabled>生成封面（待配置）</button>
+      </div>
+    </div>`;
+}
+
+/** 绑定封面选择器事件；同步到模块级 coverPickerState */
+function bindCoverPicker() {
+  const picker = $('#coverPicker');
+  if (!picker) return;
+  picker.querySelectorAll('.cover-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const t = tab.dataset.coverTab;
+      if (t === 'ai') {
+        // AI 为预留：仅切换说明面板，不真正生成
+        picker.querySelectorAll('.cover-pane').forEach((p) => { p.hidden = p.dataset.coverPane !== 'ai'; });
+        picker.querySelectorAll('.cover-tab').forEach((x) => x.classList.toggle('active', x === tab));
+        return;
+      }
+      picker.querySelectorAll('.cover-pane').forEach((p) => { p.hidden = p.dataset.coverPane !== t; });
+      picker.querySelectorAll('.cover-tab').forEach((x) => x.classList.toggle('active', x === tab));
+    });
+  });
+
+  const urlInput = $('#coverUrlInput');
+  const urlPreview = $('#coverUrlPreview');
+  const renderUrlPreview = () => {
+    const u = safeCoverUrl(urlInput.value);
+    urlPreview.innerHTML = u ? `<img src="${escapeHtml(u)}" alt="封面预览" />` : '';
+  };
+  if (urlInput) {
+    urlInput.addEventListener('input', renderUrlPreview);
+    renderUrlPreview();
+  }
+
+  const fileInput = $('#coverFileInput');
+  const localPreview = $('#coverLocalPreview');
+  if (fileInput) {
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const r = await saveCoverFile(file);
+      if (!r.ok) { toast(r.error, 'err'); fileInput.value = ''; return; }
+      coverPickerState.key = r.key;
+      coverPickerState.type = 'local';
+      const m = picker.querySelector('[data-cover-tab="local"]');
+      if (m) {
+        picker.querySelectorAll('.cover-pane').forEach((p) => { p.hidden = p.dataset.coverPane !== 'local'; });
+        picker.querySelectorAll('.cover-tab').forEach((x) => x.classList.toggle('active', x === m));
+      }
+      const url = await coverGetURL(r.key);
+      localPreview.innerHTML = url
+        ? `<img src="${escapeHtml(url)}" alt="封面预览" />`
+        : `<span class="cover-hint muted">图片已保存到本机（当前环境无法预览）</span>`;
+      toast('封面已选择');
+    });
+  }
+}
+
+/** 从弹窗 DOM 读取封面选择结果 */
+function readCoverPicker(scope) {
+  const root = scope || document;
+  const picker = root.querySelector ? root.querySelector('#coverPicker') : null;
+  if (!picker) return { coverType: 'none', coverUrl: '', coverKey: '' };
+  const activeTab = picker.querySelector('.cover-tab.active');
+  const tab = activeTab ? activeTab.dataset.coverTab : 'none';
+  if (tab === 'url') {
+    const u = safeCoverUrl((root.querySelector('#coverUrlInput') || {}).value);
+    if (u) return { coverType: 'url', coverUrl: u, coverKey: '' };
+    return { coverType: 'none', coverUrl: '', coverKey: '' };
+  }
+  if (tab === 'local' || tab === 'ai') {
+    if (coverPickerState.key) return { coverType: tab === 'ai' ? 'ai' : 'local', coverUrl: '', coverKey: coverPickerState.key };
+    return { coverType: 'none', coverUrl: '', coverKey: '' };
+  }
+  if (tab === 'ai') return { coverType: 'none', coverUrl: '', coverKey: '' };
+  return { coverType: 'none', coverUrl: '', coverKey: '' };
+}
+
+/* =========================================================================
+   观影 —— 表单弹窗
+   ========================================================================= */
+function showFormHtml(s) {
+  const v = s || {};
+  const status = v.status || 'want';
+  const statusSegs = SHOW_STATUSES.map((st) =>
+    `<button type="button" class="seg${st === status ? ' active' : ''}" data-status="${st}">
+      ${icon(SHOW_STATUS_META[st].icon)}${SHOW_STATUS_META[st].label}</button>`).join('');
+  return `
+    <h3>${icon('clapperboard')}${v.id ? '编辑剧集' : '添加剧集'}</h3>
+    <div class="show-form">
+      <div class="form-row">
+        <div class="form-field">
+          <label class="field-label">标题 <em>*</em></label>
+          <input class="input" id="showTitle" type="text" maxlength="120"
+                 placeholder="例如：进击的巨人" value="${escapeHtml(v.title || '')}" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-field">
+          <label class="field-label">原文标题</label>
+          <input class="input" id="showOriginalTitle" type="text" maxlength="120"
+                 placeholder="选填，例如：Shingeki no Kyojin" value="${escapeHtml(v.originalTitle || '')}" />
+        </div>
+        <div class="form-field">
+          <label class="field-label">年份</label>
+          <input class="input" id="showYear" type="number" min="1900" max="2100"
+                 placeholder="例如：2013" value="${v.year != null ? v.year : ''}" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-field">
+          <label class="field-label">类型 / 题材</label>
+          <input class="input" id="showGenre" type="text" maxlength="60"
+                 placeholder="例如：动画 / 悬疑" value="${escapeHtml(v.genre || '')}" />
+        </div>
+        <div class="form-field">
+          <label class="field-label">评分（0–10）</label>
+          <input class="input" id="showRating" type="number" min="0" max="10" step="0.1"
+                 placeholder="选填" value="${v.rating != null ? v.rating : ''}" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-field">
+          <label class="field-label">状态</label>
+          <div class="segs segs-status" id="showStatusSegs">${statusSegs}</div>
+        </div>
+      </div>
+      <div class="form-row form-row-4">
+        <div class="form-field">
+          <label class="field-label">第几季</label>
+          <input class="input" id="showSeason" type="number" min="1" step="1" value="${v.season || 1}" />
+        </div>
+        <div class="form-field">
+          <label class="field-label">第几集</label>
+          <input class="input" id="showEpisode" type="number" min="1" step="1" value="${v.episode || 1}" />
+        </div>
+        <div class="form-field">
+          <label class="field-label">总季数</label>
+          <input class="input" id="showTotalSeasons" type="number" min="1" step="1"
+                 placeholder="未知留空" value="${v.totalSeasons != null ? v.totalSeasons : ''}" />
+        </div>
+        <div class="form-field">
+          <label class="field-label">本季总集数</label>
+          <input class="input" id="showSeasonEpisodes" type="number" min="1" step="1"
+                 placeholder="未知留空" value="${v.currentSeasonEpisodes != null ? v.currentSeasonEpisodes : ''}" />
+        </div>
+      </div>
+      <div class="form-field">
+        <label class="field-label">简介</label>
+        <textarea class="input" id="showSummary" rows="3" maxlength="2000"
+                  placeholder="选填">${escapeHtml(v.summary || '')}</textarea>
+      </div>
+      <div class="form-field">
+        <label class="field-label">观后感 / 备注</label>
+        <textarea class="input" id="showNote" rows="2" maxlength="2000"
+                  placeholder="选填">${escapeHtml(v.note || '')}</textarea>
+      </div>
+      ${coverPickerHtml(v)}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-primary" id="modalOk">${v.id ? '保存' : '添加'}</button>
+    </div>`;
+}
+
+/** 从表单读取数据（不校验业务规则，交给调用方） */
+function readShowForm() {
+  const g = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const activeStatus = document.querySelector('#showStatusSegs .seg.active');
+  const cover = readCoverPicker(document);
+  return {
+    title: g('showTitle').trim(),
+    originalTitle: g('showOriginalTitle').trim(),
+    year: g('showYear'),
+    genre: g('showGenre').trim(),
+    status: activeStatus ? activeStatus.dataset.status : 'want',
+    season: g('showSeason'),
+    episode: g('showEpisode'),
+    totalSeasons: g('showTotalSeasons'),
+    currentSeasonEpisodes: g('showSeasonEpisodes'),
+    summary: g('showSummary').trim(),
+    note: g('showNote').trim(),
+    rating: g('showRating'),
+    coverType: cover.coverType,
+    coverUrl: cover.coverUrl,
+    coverKey: cover.coverKey,
+  };
+}
+
+/** 绑定状态分段控件 */
+function bindStatusSegs() {
+  const wrap = $('#showStatusSegs');
+  if (!wrap) return;
+  wrap.querySelectorAll('.seg').forEach((b) => {
+    b.addEventListener('click', () => {
+      wrap.querySelectorAll('.seg').forEach((x) => x.classList.toggle('active', x === b));
+    });
+  });
+}
+
+function openAddShowModal() {
+  coverPickerState = { type: 'none', url: '', key: '', previewUrl: '' };
+  openModal(showFormHtml(null));
+  bindStatusSegs();
+  bindCoverPicker();
+  const t = $('#showTitle');
+  if (t) t.focus();
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    const f = readShowForm();
+    if (!f.title) { toast('请填写标题', 'err'); $('#showTitle').focus(); return; }
+    const created = Store.addShow(f);
+    if (!created) { toast('添加失败：标题无效', 'err'); return; }
+    closeModal();
+    toast('已添加《' + created.title + '》');
+    renderShows();
+  });
+}
+
+function openEditShowModal(id) {
+  const s = Store.getShow(id);
+  if (!s) return;
+  coverPickerState = { type: s.coverType, url: s.coverUrl, key: s.coverKey, previewUrl: '' };
+  openModal(showFormHtml(s));
+  bindStatusSegs();
+  bindCoverPicker();
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    const f = readShowForm();
+    if (!f.title) { toast('请填写标题', 'err'); $('#showTitle').focus(); return; }
+    // 封面若被替换为新的本地图，旧图异步清理
+    const oldKey = s.coverKey;
+    Store.updateShow(id, {
+      title: f.title, originalTitle: f.originalTitle, year: f.year, genre: f.genre,
+      status: f.status, season: f.season, episode: f.episode,
+      totalSeasons: f.totalSeasons, currentSeasonEpisodes: f.currentSeasonEpisodes,
+      summary: f.summary, note: f.note, rating: f.rating,
+      coverType: f.coverType, coverUrl: f.coverUrl, coverKey: f.coverKey,
+      lastWatchedAt: s.lastWatchedAt, finishedAt: s.finishedAt,
+    });
+    if (oldKey && oldKey !== f.coverKey) coverDelete(oldKey);
+    closeModal();
+    toast('已保存');
+    renderShows();
+  });
+}
+
+/* --- 进度调整弹窗 --- */
+function openProgressModal(id) {
+  const s = Store.getShow(id);
+  if (!s) return;
+  openModal(`
+    <h3>${icon('sliders-horizontal')}调整观看进度</h3>
+    <p>《${escapeHtml(s.title)}》当前：${escapeHtml(showProgressText(s))}</p>
+    <div class="form-row">
+      <div class="form-field">
+        <label class="field-label">第几季</label>
+        <input class="input" id="progressSeasonInput" type="number" min="1" step="1" value="${s.season}" />
+      </div>
+      <div class="form-field">
+        <label class="field-label">第几集</label>
+        <input class="input" id="progressEpisodeInput" type="number" min="1" step="1" value="${s.episode}" />
+      </div>
+    </div>
+    <div class="form-field">
+      <label class="field-label">备注（选填）</label>
+      <input class="input" id="progressNoteInput" type="text" maxlength="200" placeholder="例如：这集很精彩" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-primary" id="modalOk">保存进度</button>
+    </div>
+  `);
+  const si = $('#progressSeasonInput');
+  const ei = $('#progressEpisodeInput');
+  if (si) si.focus();
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    const check = validateSeasonEpisode(si.value, ei.value, s.currentSeasonEpisodes);
+    if (!check.ok) { toast(check.error, 'err'); return; }
+    const noteEl = $('#progressNoteInput');
+    Store.updateProgress(id, check.season, check.episode, { note: noteEl ? noteEl.value.trim() : '' });
+    closeModal();
+    toast(`进度更新为 ${check.season > 1 ? 'S' + check.season + ' ' : ''}第 ${check.episode} 集`);
+    renderShows();
+  });
+}
+
+/* --- 标记已看完 --- */
+function openFinishModal(id) {
+  const s = Store.getShow(id);
+  if (!s) return;
+  openModal(`
+    <h3>${icon('check-circle-2')}标记为已看完</h3>
+    <p>将《${escapeHtml(s.title)}》记为已看完，资料与进度都会保留，之后仍可改回「在看」。</p>
+    <div class="form-row">
+      <div class="form-field">
+        <label class="field-label">完成日期</label>
+        <input class="input" id="showFinishDate" type="date" value="${todayStr()}" />
+      </div>
+      <div class="form-field">
+        <label class="field-label">评分（0–10，选填）</label>
+        <input class="input" id="showFinishRating" type="number" min="0" max="10" step="0.1"
+               value="${s.rating != null ? s.rating : ''}" />
+      </div>
+    </div>
+    <div class="form-field">
+      <label class="field-label">观后感（选填）</label>
+      <textarea class="input" id="showFinishNote" rows="3" maxlength="2000"
+                placeholder="看完想说点什么">${escapeHtml(s.note || '')}</textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-primary" id="modalOk">确认已看完</button>
+    </div>
+  `);
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    const d = $('#showFinishDate').value;
+    const r = $('#showFinishRating').value;
+    const n = $('#showFinishNote').value.trim();
+    Store.finishShow(id, { date: d, rating: r, note: n });
+    closeModal();
+    toast('已标记为看完 🎉');
+    renderShows();
+  });
+}
+
+/* --- 删除确认 --- */
+function openDeleteShowModal(id) {
+  const s = Store.getShow(id);
+  if (!s) return;
+  openModal(`
+    <h3>${icon('trash-2')}删除剧集</h3>
+    <p>将删除《${escapeHtml(s.title)}》及其全部观看记录，此操作不可撤销。</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-danger-soft" id="modalOk">确认删除</button>
+    </div>
+  `);
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    Store.removeShow(id);
+    closeModal();
+    toast('已删除');
+    renderShows();
+  });
+}
+
+/* --- 详情弹窗 --- */
+function openShowDetail(id) {
+  const s = Store.getShow(id);
+  if (!s) return;
+  const m = SHOW_STATUS_META[s.status] || SHOW_STATUS_META.want;
+  const meta = [
+    s.year ? ['上映年份', String(s.year)] : null,
+    s.genre ? ['类型', s.genre] : null,
+    s.totalSeasons != null ? ['总季数', String(s.totalSeasons)] : null,
+    s.currentSeasonEpisodes != null ? ['本季集数', String(s.currentSeasonEpisodes)] : null,
+    s.rating != null ? ['评分', String(s.rating)] : null,
+    s.finishedAt ? ['看完于', s.finishedAt] : null,
+  ].filter(Boolean).map(([k, val]) => `
+    <div class="detail-meta-item"><span>${escapeHtml(k)}</span><b>${escapeHtml(val)}</b></div>`).join('');
+
+  const logs = Store.getWatchLogs(id, 10);
+  const logHtml = logs.length ? `
+    <div class="watchlog">
+      <h4>${icon('history')}观看记录</h4>
+      <ul class="watchlog-list">
+        ${logs.map((l) => {
+          const when = new Date(l.at);
+          const ts = `${when.getFullYear()}/${pad2(when.getMonth() + 1)}/${pad2(when.getDate())} ${pad2(when.getHours())}:${pad2(when.getMinutes())}`;
+          let desc = l.note;
+          if (!desc) {
+            if (l.kind === 'progress') desc = `${l.season > 1 ? 'S' + l.season + ' ' : ''}第 ${l.episode} 集`;
+            else if (l.kind === 'finish') desc = '标记为已看完';
+            else desc = '状态变更';
+          }
+          return `<li><span class="log-time">${ts}</span><span class="log-desc">${escapeHtml(desc)}</span></li>`;
+        }).join('')}
+      </ul>
+    </div>` : '';
+
+  const progressNote = showProgressWarnText(s);
+  openModal(`
+    <div class="show-detail">
+      <div class="detail-top">
+        <div class="detail-poster">
+          ${coverImgHtml(s)}
+        </div>
+        <div class="detail-info">
+          <h3>${escapeHtml(s.title)}</h3>
+          ${s.originalTitle ? `<div class="detail-original">${escapeHtml(s.originalTitle)}</div>` : ''}
+          <div class="detail-badge"><span class="poster-badge ${m.cls}">${icon(m.icon)}${m.label}</span></div>
+          <div class="detail-progress">${icon('clock')}${escapeHtml(showProgressText(s))}</div>
+          ${progressNote ? `<div class="progress-warn">${icon('alert-triangle')}${escapeHtml(progressNote)}</div>` : ''}
+        </div>
+      </div>
+      ${meta ? `<div class="detail-meta">${meta}</div>` : ''}
+      ${s.summary ? `<div class="detail-desc"><h4>简介</h4><p>${escapeHtml(s.summary)}</p></div>` : ''}
+      ${s.note ? `<div class="detail-desc"><h4>观后感</h4><p>${escapeHtml(s.note)}</p></div>` : ''}
+      ${logHtml}
+      <div class="detail-acts">
+        <button class="btn btn-ghost" data-act="prev" data-id="${escapeHtml(id)}">${icon('minus')}上一集</button>
+        <button class="btn btn-primary" data-act="continue" data-id="${escapeHtml(id)}">${icon('play')}看下一集</button>
+        <button class="btn btn-ghost" data-act="progress" data-id="${escapeHtml(id)}">${icon('sliders-horizontal')}改进度</button>
+        <button class="btn btn-ghost" data-act="finish" data-id="${escapeHtml(id)}">${icon('check-circle-2')}已看完</button>
+        <button class="btn btn-ghost" data-act="edit" data-id="${escapeHtml(id)}">${icon('pencil')}编辑</button>
+        <button class="btn btn-danger-soft" data-act="delete" data-id="${escapeHtml(id)}">${icon('trash-2')}删除</button>
+      </div>
+    </div>
+  `);
+  hydrateCovers($('#modal'));
+  // 详情内操作按钮（一次性绑定到当前弹窗 DOM）
+  $('#modal').querySelectorAll('.detail-acts [data-act]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const act = btn.dataset.act;
+      const sid = btn.dataset.id;
+      if (act === 'prev') { handleDecEpisode(sid); openShowDetail(sid); }
+      else if (act === 'continue') { handleIncEpisode(sid); openShowDetail(sid); }
+      else if (act === 'progress') openProgressModal(sid);
+      else if (act === 'finish') openFinishModal(sid);
+      else if (act === 'edit') openEditShowModal(sid);
+      else if (act === 'delete') openDeleteShowModal(sid);
+    });
+  });
+}
+
+/** 详情内进度越界提示（复用 progressWarn 但改名避免与渲染层混淆） */
+function showProgressWarnText(show) {
+  return progressWarn(show);
+}
+
+/* --- 进度推进/回退的统一入口（写库 + 重渲染） --- */
+function handleIncEpisode(id) {
+  const s = Store.getShow(id);
+  if (!s) return;
+  const r = incEpisode(s);
+  Store.updateProgress(id, r.season, r.episode);
+  toast(`进度：${showProgressText(Store.getShow(id))}`);
+  renderShows();
+}
+function handleDecEpisode(id) {
+  const s = Store.getShow(id);
+  if (!s) return;
+  const r = decEpisode(s);
+  Store.updateProgress(id, r.season, r.episode);
+  toast(`进度：${showProgressText(Store.getShow(id))}`);
+  renderShows();
+}
+
+/* =========================================================================
+   观影 —— 事件委托与初始化
+   ========================================================================= */
+function initShowsPage() {
+  const page = document.getElementById('page-shows');
+  if (!page) return;
+
+  // 容器级委托：所有动态内容点击统一在此处理（重建 innerHTML 后无需重绑）
+  page.addEventListener('click', (e) => {
+    const t = e.target;
+
+    // 1) 筛选标签
+    const chip = t.closest('.chip[data-status]');
+    if (chip) {
+      state.showStatus = chip.dataset.status;
+      renderShows();
+      return;
+    }
+
+    // 2) 添加按钮
+    if (t.closest('#showAddBtn')) { openAddShowModal(); return; }
+
+    // 3) 展开 / 收起
+    const toggle = t.closest('button[data-act="view-all"], button[data-act="collapse"]');
+    if (toggle) {
+      const key = toggle.dataset.section;
+      if (key) state.showExpanded[key] = !state.showExpanded[key];
+      renderShows();
+      return;
+    }
+
+    // 4) 卡片 / 区块上的具体操作
+    const actBtn = t.closest('button[data-act][data-id]');
+    if (actBtn) {
+      const act = actBtn.dataset.act;
+      const id = actBtn.dataset.id;
+      if (act === 'continue') handleIncEpisode(id);
+      else if (act === 'edit') openEditShowModal(id);
+      else openShowDetail(id);
+      return;
+    }
+
+    // 5) 兜底：点击卡片空白处 → 详情
+    const card = t.closest('.poster-card[data-id]');
+    if (card) { openShowDetail(card.dataset.id); return; }
+  });
+
+  // 键盘可达性：卡片回车 / 空格打开详情
+  page.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target.closest('.poster-card[data-id]');
+    if (card) { e.preventDefault(); openShowDetail(card.dataset.id); }
+  });
+
+  // 搜索（防抖 200ms）
+  const searchEl = document.getElementById('showSearch');
+  if (searchEl) {
+    let timer = null;
+    searchEl.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        state.showQuery = searchEl.value || '';
+        renderShows();
+      }, 200);
+    });
+  }
+
+  // 排序
+  const sortSel = document.getElementById('showSortSel');
+  if (sortSel) {
+    sortSel.addEventListener('change', () => {
+      state.showSort = sortSel.value || 'updated';
+      renderShows();
+    });
+  }
+
+  // 底部外链：确保新窗口打开（href 已在 HTML 设定，这里仅兜底）
+  const link = document.getElementById('showsLink');
+  if (link) {
+    link.addEventListener('click', () => { /* 交给浏览器默认行为；HREF/target 已在 HTML 声明 */ });
+  }
+}
+
+/* =========================================================================
    页面路由
    ========================================================================= */
 function switchPage(page) {
@@ -389,6 +1697,7 @@ function switchPage(page) {
   $$('.page').forEach((p) => p.classList.toggle('active', p.id === 'page-' + page));
   if (page === 'stats') renderStats();
   if (page === 'vault') renderVault();
+  if (page === 'shows') renderShows();
 }
 
 $$('.nav-item[data-page]').forEach((btn) => {
@@ -1485,6 +2794,7 @@ function init() {
 
   initEntryForms();
   initMonthlySummary();
+  initShowsPage();
   switchPage('ledger');
   renderLedger();
   refreshIcons(document.body);
