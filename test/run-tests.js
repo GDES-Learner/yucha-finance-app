@@ -63,7 +63,12 @@ function boot() {
     'tvmazeSeasonTitle, mapTvmazeShow, pickChineseAka, stripTradHalf, tvmazeGetChineseTitle, ' +
     'showSearchBlockHtml, renderTvmazeShows, setTvmazeStatus, ' +
     'CLOUD_PUBLIC_CONFIG, CLOUD_TABLE, ensureCloudClient, isCloudSignedIn, renderSyncEntry, ' +
-    'renderCloudCard, openLoginModal, cloudPush, cloudPull, scheduleAutoPush, escapeHtml };\n' +
+    'renderCloudCard, openLoginModal, cloudPush, cloudPull, scheduleAutoPush, escapeHtml, ' +
+    'WORD_MAX_LEN, MEANING_MAX_LEN, normalizeWord, normalizeWordCard, ' +
+    'parseWordsInput, parseWordEntries, mergeWordIds, filterWordCards, ' +
+    'sortWordCards, wordCardHtml, wordItemHtml, toggleWordMeaning, renderWords, renderEmptyWords, ' +
+    'openAddWordCardModal, openEditWordCardModal, openWordCardModal, openDeleteWordCardModal, ' +
+    'initWordsPage };\n' +
     // coverPickerState 是被整体重新赋值的 let 变量，直接放进对象会快照化，
     // 因此用 getter 暴露实时值
     'Object.defineProperty(window.__app, "coverPickerState", { get: function(){ return coverPickerState; } });\n' +
@@ -483,9 +488,10 @@ test('需求6 数据持久化到 localStorage', (w) => {
   ok(migratedVault.wechat_change === 128.5, '旧 wechat 余额整体迁入「零钱」');
   ok(migratedVault.wechat_lct === 0, '「零钱通」初始为 0');
   ok(!('wechat' in migratedVault), '旧 wechat 键已被移除');
-  ok(dom3.window.__app.Store.data.version === 5, '数据版本升级为 5');
+  ok(dom3.window.__app.Store.data.version === 6, '数据版本升级为 6');
   ok(Array.isArray(dom3.window.__app.Store.data.shows), '迁移后补齐 shows 数组');
   ok(Array.isArray(dom3.window.__app.Store.data.watchLogs), '迁移后补齐 watchLogs 数组');
+  ok(Array.isArray(dom3.window.__app.Store.data.wordCards), '迁移后补齐 wordCards 数组');
 
   // 损坏数据（非法 JSON）不应导致崩溃，且会备份原始串
   const dom4 = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
@@ -1062,12 +1068,13 @@ test('需求11 登录弹窗结构完整且校验先行', (w) => {
 /* =========================================================================
    观影模块 —— A 数据 / 迁移
    ========================================================================= */
-test('观影A 数据版本为 5 且新字段齐备', (w) => {
+test('观影A 数据版本为 6 且新字段齐备', (w) => {
   const d = w.__app.Store.data;
-  ok(d.version === 5, 'DATA_VERSION 为 5');
+  ok(d.version === 6, 'DATA_VERSION 为 6');
   ok(Array.isArray(d.shows), 'shows 为数组');
   ok(Array.isArray(d.watchLogs), 'watchLogs 为数组');
-  ok(w.__app.DATA_VERSION === 5, '导出常量 DATA_VERSION 为 5');
+  ok(Array.isArray(d.wordCards), 'wordCards 为数组');
+  ok(w.__app.DATA_VERSION === 6, '导出常量 DATA_VERSION 为 6');
 });
 
 test('观影A v4 旧数据迁移：季号并入标题并移除季字段', (w) => {
@@ -1087,7 +1094,7 @@ test('观影A v4 旧数据迁移：季号并入标题并移除季字段', (w) =>
     'window.__app={Store, DATA_VERSION};})();');
   dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded', { bubbles: true }));
   const d = dom.window.__app.Store.data;
-  ok(d.version === 5, 'v4 → v5 升级成功');
+  ok(d.version === 6, 'v4 → v6 升级成功');
   const a = d.shows.find((s) => s.id === 'a');
   const b = d.shows.find((s) => s.id === 'b');
   ok(a.title === '进击的巨人3', 'season=3 的季号并入标题');
@@ -1110,9 +1117,10 @@ test('观影A 旧版（v3）数据迁移后补空数组且不破坏原数据', (
     'window.__app={Store, DATA_VERSION, normalizeShow, normalizeWatchLog};})();');
   dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded', { bubbles: true }));
   const d = dom.window.__app.Store.data;
-  ok(d.version === 5, 'v3 → v5 升级成功');
+  ok(d.version === 6, 'v3 → v6 升级成功');
   ok(Array.isArray(d.shows) && d.shows.length === 0, 'shows 补为空数组');
   ok(Array.isArray(d.watchLogs) && d.watchLogs.length === 0, 'watchLogs 补为空数组');
+  ok(Array.isArray(d.wordCards) && d.wordCards.length === 0, 'wordCards 补为空数组');
   ok(d.transactions.length === 1, '原有交易未被破坏');
   ok(d.budgets['2026-01'] === 800, '原有预算未被破坏');
   ok(d.vault.wechat_change === 50, '原有金库未被破坏');
@@ -1437,7 +1445,7 @@ test('观影E hydrateCovers 在无 IDB 时不抛错并标记失败', (w) => {
    ========================================================================= */
 test('观影F 导航存在第 4 个「观影」入口', (w) => {
   const items = w.document.querySelectorAll('.nav-item[data-page]');
-  ok(items.length === 4, '共有 4 个导航项');
+  ok(items.length === 5, '共有 5 个导航项');
   const showsNav = w.document.querySelector('.nav-item[data-page="shows"]');
   ok(!!showsNav, '存在 data-page="shows" 的导航项');
   ok(showsNav.textContent.includes('观影'), '文案为「观影」');
@@ -1842,7 +1850,8 @@ test('观影H 观影数据随快照进入云同步 payload', (w) => {
   const payload = JSON.parse(JSON.stringify(app.Store.data));
   ok(Array.isArray(payload.shows) && payload.shows.length === 1, 'payload 含 shows');
   ok(Array.isArray(payload.watchLogs), 'payload 含 watchLogs');
-  ok(payload.version === 5, 'payload 版本为 5');
+  ok(Array.isArray(payload.wordCards), 'payload 含 wordCards');
+  ok(payload.version === 6, 'payload 版本为 6');
 });
 
 test('观影H 本地封面仅同步 key（二进制不上云）', (w) => {
@@ -2393,6 +2402,396 @@ test('观影J externalId 可由 TVmaze 结果写入并持久化', (w) => {
   const s = app.Store.addShow({ title: '带外部ID的剧', externalId: '919', currentSeasonEpisodes: 22 });
   ok(s.externalId === '919', 'externalId 已写入');
   ok(app.Store.getShow(s.id).externalId === '919', '持久化后可读回');
+});
+
+/* =========================================================================
+   英语单词模块 —— K 数据 / 渲染 / 交互
+   ========================================================================= */
+test('单词K 导航新增「英语单词」页且骨架齐备', (w) => {
+  const nav = w.document.querySelector('.nav-item[data-page="words"]');
+  ok(!!nav, '侧边栏存在「英语单词」导航项');
+  ok(nav.textContent.indexOf('英语单词') > -1, '导航文案为「英语单词」');
+  click(w, nav);
+  const page = w.document.getElementById('page-words');
+  ok(!!page && page.classList.contains('active'), '点击后切换到英语单词页');
+  ok(!!w.document.getElementById('wordAddBtn'), '页头有「新增卡片」按钮');
+  ok(!!w.document.getElementById('wordBoard'), '存在卡片板容器 #wordBoard');
+});
+
+test('单词K 空态渲染正确', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.renderWords();
+  const board = w.document.getElementById('wordBoard');
+  ok(board.querySelector('.empty') !== null, '无卡片时显示空态');
+  ok(board.textContent.indexOf('还没有单词卡片') > -1, '空态文案正确');
+});
+
+test('单词K parseWordsInput：一行一个、去空行、去重、限长', (w) => {
+  const p = w.__app.parseWordsInput;
+  ok(JSON.stringify(p('affect\neffect\ninfect')) === JSON.stringify(['affect', 'effect', 'infect']), '按行解析为单词数组');
+  ok(p('').length === 0, '空文本解析为空数组');
+  ok(p('\n  \n\n').length === 0, '只有空行时解析为空数组');
+  const d = p('affect\nAFFECT\nEffect');
+  ok(d.length === 2 && d[0] === 'affect' && d[1] === 'Effect', '大小写不敏感去重且保留先出现者');
+  ok(p('  affect  ')[0] === 'affect', '首尾空白被裁剪');
+  ok(p('a'.repeat(80))[0].length === w.__app.WORD_MAX_LEN, '超长单词被截断到上限');
+});
+
+test('单词K 新增卡片：单个单词也是一张卡', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.renderWords();
+  click(w, w.document.getElementById('wordAddBtn'));
+  ok(w.document.getElementById('modalMask').classList.contains('show'), '弹窗已打开');
+  setVal(w, w.document.getElementById('wordInput'), 'conscientious');
+  click(w, w.document.getElementById('modalOk'));
+  const cards = app.Store.getWordCards();
+  ok(cards.length === 1, '新增了 1 张卡片');
+  ok(cards[0].words.length === 1, '单个单词存为只有 1 个词的卡');
+  ok(cards[0].words[0].text === 'conscientious', '单词文本正确');
+  ok(typeof cards[0].words[0].id === 'string' && cards[0].words[0].id.length > 0, '每个词有稳定 id（便于后续挂释义）');
+  const domCards = w.document.querySelectorAll('#wordBoard .word-card');
+  ok(domCards.length === 1, '卡片板渲染出 1 张卡');
+  ok(domCards[0].textContent.indexOf('conscientious') > -1, '卡片显示该单词');
+});
+
+test('单词K 一组形近词存一卡，卡内一词一行', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.renderWords();
+  click(w, w.document.getElementById('wordAddBtn'));
+  setVal(w, w.document.getElementById('wordInput'), 'affect\neffect\ninfect');
+  ok(w.document.getElementById('wordHint').textContent.indexOf('3') > -1, '输入时实时统计词数');
+  click(w, w.document.getElementById('modalOk'));
+  const card = app.Store.getWordCards()[0];
+  ok(card.words.length === 3, '一张卡存下 3 个形近词');
+  const el = w.document.querySelector('#wordBoard .word-card');
+  ok(el.querySelectorAll('.word-item').length === 3, '每个词各占一行（3 个 .word-item）');
+  ok(el.querySelector('.word-card-count').textContent.indexOf('3') > -1, '卡片头部显示词数');
+});
+
+test('单词K 空输入被拒绝，弹窗不关闭', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.renderWords();
+  click(w, w.document.getElementById('wordAddBtn'));
+  setVal(w, w.document.getElementById('wordInput'), '   \n\n  ');
+  click(w, w.document.getElementById('modalOk'));
+  ok(app.Store.getWordCards().length === 0, '没有创建空卡片');
+  ok(w.document.getElementById('modalMask').classList.contains('show'), '弹窗保持打开以便继续输入');
+});
+
+test('单词K 编辑卡片：已有单词回填并可替换整组', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const c = app.Store.addWordCard({ words: ['affect', 'effect', 'infect'] });
+  app.renderWords();
+  click(w, w.document.querySelector('#wordBoard .word-card button[data-act="edit"]'));
+  const ta = w.document.getElementById('wordInput');
+  ok(ta.value === 'affect\neffect\ninfect', '已有单词按行回填到文本框');
+  setVal(w, ta, 'desert\ndessert');
+  click(w, w.document.getElementById('modalOk'));
+  const after = app.Store.getWordCard(c.id);
+  ok(after.words.length === 2, '整组词被替换为 2 个');
+  ok(after.words[0].text === 'desert' && after.words[1].text === 'dessert', '新词内容正确');
+  ok(w.document.querySelectorAll('#wordBoard .word-item').length === 2, '界面同步更新');
+});
+
+test('单词K 删除需二次确认，取消不删', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: ['desert', 'dessert'] });
+  app.renderWords();
+  click(w, w.document.querySelector('#wordBoard .word-card button[data-act="delete"]'));
+  ok(w.document.getElementById('modal').textContent.indexOf('desert') > -1, '确认弹窗展示将要删除的单词');
+  click(w, w.document.getElementById('modalCancel'));
+  ok(app.Store.getWordCards().length === 1, '取消后卡片仍在');
+  click(w, w.document.querySelector('#wordBoard .word-card button[data-act="delete"]'));
+  click(w, w.document.getElementById('modalOk'));
+  ok(app.Store.getWordCards().length === 0, '确认后卡片被删除');
+  ok(w.document.querySelector('#wordBoard .empty') !== null, '删空后回到空态');
+});
+
+test('单词K 用户输入渲染前转义（防 XSS）', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: ['<img src=x onerror=alert(1)>'] });
+  app.renderWords();
+  const html = w.document.getElementById('wordBoard').innerHTML;
+  ok(html.indexOf('&lt;img') > -1, '尖括号被转义为实体');
+  ok(html.indexOf('<img') === -1, '未注入真实 <img> 元素');
+});
+
+test('单词K normalizeWordCard：空卡丢弃 / 同卡去重 / 容错', (w) => {
+  const n = w.__app.normalizeWordCard;
+  ok(n({ words: [] }) === false, '空数组卡片被丢弃');
+  ok(n({ words: ['   ', ''] }) === false, '全是空白词的卡片被丢弃');
+  ok(n({ words: 'not-an-array' }) === false, 'words 非数组时安全拒绝');
+  ok(n(null) === false, 'null 安全拒绝');
+  const c = { words: ['Affect', 'affect', 'effect'] };
+  ok(n(c) === true, '合法卡片通过');
+  ok(c.words.length === 2, '同一张卡内大小写不敏感去重');
+  ok(c.words[0].text === 'Affect' && c.words[1].text === 'effect', '保留先出现的写法');
+  ok(typeof c.id === 'string' && !!c.id, '补齐卡片 id');
+  ok(typeof c.createdAt === 'number' && typeof c.updatedAt === 'number', '补齐时间戳');
+});
+
+test('单词K normalizeWord 兼容字符串与对象两种写法', (w) => {
+  const n = w.__app.normalizeWord;
+  const a = n('conscientious');
+  ok(a && a.text === 'conscientious' && typeof a.id === 'string', '字符串输入被规整为对象');
+  const b = n({ id: 'w_fixed', text: '  desert  ' });
+  ok(b.id === 'w_fixed' && b.text === 'desert', '对象输入保留 id 并裁剪空白');
+  ok(n('') === false && n('   ') === false, '空词返回 false');
+  ok(n(null) === false, 'null 返回 false');
+});
+
+test('单词K filterWordCards / sortWordCards 纯函数', (w) => {
+  const { filterWordCards, sortWordCards } = w.__app;
+  const list = [
+    { id: '1', words: [{ text: 'affect' }, { text: 'effect' }], updatedAt: 10 },
+    { id: '2', words: [{ text: 'desert' }], updatedAt: 30 },
+  ];
+  ok(filterWordCards(list, '').length === 2, '空关键词返回全部');
+  ok(filterWordCards(list, 'AFF').length === 1, '匹配卡内任意单词且不区分大小写');
+  ok(filterWordCards(list, 'zzz').length === 0, '无匹配返回空');
+  const sorted = sortWordCards(list);
+  ok(sorted[0].id === '2', '按最近更新倒序排列');
+  ok(list[0].id === '1', '不修改原数组');
+});
+
+test('单词K v5 旧数据迁移：补 wordCards 空数组且不破坏原数据', (w) => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const legacy = JSON.stringify({
+    version: 5, appName: '测试', customNav: [],
+    transactions: [{ id: 't1', type: 'expense', amount: 20, category: '奶茶', account: 'wechat', date: '2026-01-05', createdAt: 1 }],
+    budgets: { '2026-01': 800 }, vault: { wechat_change: 50, wechat_lct: 0, alipay: 0, bank: 0 },
+    shows: [], watchLogs: [],
+  });
+  const dom = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  dom.window.localStorage.setItem('life_assistant_v1', legacy);
+  dom.window.eval('(function(){' + fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8') +
+    'window.__app={Store, DATA_VERSION, normalizeWordCard};})();');
+  dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded', { bubbles: true }));
+  const d = dom.window.__app.Store.data;
+  ok(d.version === 6, 'v5 → v6 升级成功');
+  ok(Array.isArray(d.wordCards) && d.wordCards.length === 0, 'wordCards 补为空数组');
+  ok(d.transactions.length === 1, '原有交易未被破坏');
+  ok(d.budgets['2026-01'] === 800, '原有预算未被破坏');
+  ok(d.vault.wechat_change === 50, '原有金库未被破坏');
+});
+
+test('单词K 样式：实体白卡 + 瀑布流，复用既有 token', (w) => {
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  ok(/\.word-board\s*\{[^}]*columns:/.test(css), '.word-board 用多列实现瀑布流');
+  ok(/\.word-card\s*\{[^}]*break-inside:\s*avoid/.test(css), '卡片不跨列断开');
+  const m = css.match(/\.word-card\s*\{[^}]*\}/);
+  ok(!!m && /var\(--surface\)/.test(m[0]), '卡片背景复用 --surface（实体白卡）');
+  ok(!!m && /var\(--r-md\)/.test(m[0]), '圆角复用 --r-md');
+  ok(!!m && /var\(--shadow-xs\)/.test(m[0]), '阴影复用 --shadow-xs');
+});
+
+/* =========================================================================
+   英语单词 —— L 释义 / 灰条遮挡
+   ========================================================================= */
+test('单词L parseWordEntries：一行「单词 释义」，按第一个空白切分', (w) => {
+  const p = w.__app.parseWordEntries;
+  const a = p('affect v. 影响，感动\neffect n. 效果，作用');
+  ok(a.length === 2, '解析出 2 条词条');
+  ok(a[0].text === 'affect' && a[0].meaning === 'v. 影响，感动', '词形与释义正确');
+  ok(a[1].text === 'effect' && a[1].meaning === 'n. 效果，作用', '第二条词形与释义正确');
+  const b = p('ephemeral');
+  ok(b.length === 1 && b[0].text === 'ephemeral' && b[0].meaning === '', '只写单词时释义为空串');
+  const c = p('dessert\tn. 甜点');
+  ok(c.length === 1 && c[0].text === 'dessert' && c[0].meaning === 'n. 甜点', 'Tab 同样作为词与释义的分隔符');
+  const d = p('infect   v. 传染');
+  ok(d[0].text === 'infect' && d[0].meaning === 'v. 传染', '多个连续空白折叠，释义不带前导空白');
+  const e = p('affect 甲\nAFFECT 乙');
+  ok(e.length === 1 && e[0].meaning === '甲', '按词形去重，保留先出现者');
+  ok(p('\r\naffect 甲\r\n').length === 1, 'Windows 换行同样解析正确');
+  ok(p('a'.repeat(80) + ' 释义')[0].text.length === w.__app.WORD_MAX_LEN, '超长单词截断到上限');
+  ok(p('word ' + 'm'.repeat(120))[0].meaning.length === w.__app.MEANING_MAX_LEN, '超长释义截断到上限');
+  const f = p('   甲   ');
+  ok(f.length === 1 && f[0].text === '甲' && f[0].meaning === '', '行首第一个非空白片段一律视为单词');
+  ok(p('\n  \n\t\n').length === 0, '纯空白行全部丢弃');
+});
+
+test('单词L parseWordsInput 契约不变：仍只返回词形字符串数组', (w) => {
+  const p = w.__app.parseWordsInput;
+  ok(JSON.stringify(p('affect v. 影响\neffect\ninfect n. 传染'))
+    === JSON.stringify(['affect', 'effect', 'infect']), '带释义时也只返回词形');
+  ok(p('').length === 0 && p('\n \n').length === 0, '空输入仍返回空数组');
+  ok(w.__app.parseWordsInput('a'.repeat(80))[0].length === w.__app.WORD_MAX_LEN, '限长行为不变');
+});
+
+test('单词L normalizeWord 补齐 meaning（旧数据自动兜底）', (w) => {
+  const n = w.__app.normalizeWord;
+  ok(n('desert').meaning === '', '旧字符串数据兜底为空释义');
+  ok(n({ id: 'w1', text: 'dessert' }).meaning === '', '缺 meaning 的对象兜底为空串');
+  ok(n({ text: 'affect', meaning: '  v. 影响，感动  ' }).meaning === 'v. 影响，感动', '释义首尾空白被裁剪');
+  ok(n({ text: 'word', meaning: 'm'.repeat(120) }).meaning.length === w.__app.MEANING_MAX_LEN, '释义超长截断');
+  ok(n({ text: 'word', meaning: 123 }).meaning === '', '非字符串释义安全降级为空串');
+  const a = n({ id: 'w_keep', text: 'effect', meaning: 'n. 效果' });
+  ok(a.id === 'w_keep' && a.text === 'effect' && a.meaning === 'n. 效果', 'id / text / meaning 三者并存');
+});
+
+test('单词L mergeWordIds：编辑后按词形沿用旧 id', (w) => {
+  const m = w.__app.mergeWordIds;
+  const old = [{ id: 'w_a', text: 'Affect' }, { id: 'w_b', text: 'effect' }];
+  const out = m([{ text: 'affect', meaning: 'v. 影响' }, { text: 'desert', meaning: '' }], old);
+  ok(out[0].id === 'w_a', '词形匹配（不区分大小写）沿用旧 id');
+  ok(out[1].id === undefined, '新词不带 id，交由 normalizeWord 生成');
+  ok(out[0].meaning === 'v. 影响', '释义随行带出');
+  ok(m([{ text: 'a', meaning: '' }], null)[0].id === undefined, 'oldWords 为空时安全');
+});
+
+test('单词L filterWordCards 同时匹配释义', (w) => {
+  const f = w.__app.filterWordCards;
+  const list = [
+    { id: '1', words: [{ text: 'affect', meaning: '影响，感动' }], updatedAt: 1 },
+    { id: '2', words: [{ text: 'desert' }], updatedAt: 2 },
+  ];
+  ok(f(list, '影响').length === 1, '可按中文释义搜索');
+  ok(f(list, 'desert').length === 1, '词形匹配不受影响');
+  ok(f(list, 'zzz').length === 0, '无匹配返回空');
+  ok(f(list, '').length === 2, '空关键词返回全部');
+});
+
+test('单词L 有释义的行渲染灰条，无释义的行不渲染占位', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响，感动' }, { text: 'ephemeral' }] });
+  app.renderWords();
+  const items = w.document.querySelectorAll('#wordBoard .word-item');
+  ok(items.length === 2, '两个词各占一行');
+  ok(!!items[0].querySelector('.word-meaning-bar'), '有释义的行有灰条');
+  ok(items[0].querySelector('.word-meaning-text').textContent === 'v. 影响，感动', '释义文本已渲染');
+  ok(!items[1].querySelector('.word-meaning-bar'), '无释义的行不出现灰条');
+  ok(!items[1].querySelector('.word-meaning'), '无释义的行不出现任何占位元素');
+  ok(items[1].textContent.trim() === 'ephemeral', '无释义的行只有单词本身');
+});
+
+test('单词L 点灰条揭开、再点释义遮回，且逐词独立', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响' }, { text: 'effect', meaning: 'n. 效果' }] });
+  app.renderWords();
+  const row = (i) => w.document.querySelectorAll('#wordBoard .word-item')[i];
+  ok(!row(0).classList.contains('on'), '默认处于遮挡态');
+  ok(row(0).querySelector('.word-meaning').getAttribute('aria-pressed') === 'false', '默认 aria-pressed=false');
+  click(w, row(0).querySelector('.word-meaning-bar'));
+  ok(row(0).classList.contains('on'), '点灰条后该行揭开');
+  ok(row(0).querySelector('.word-meaning').getAttribute('aria-pressed') === 'true', 'aria-pressed 同步为 true');
+  ok(!row(1).classList.contains('on'), '另一行不受影响（逐词独立）');
+  click(w, row(0).querySelector('.word-meaning-text'));
+  ok(!row(0).classList.contains('on'), '再点释义重新遮回');
+  ok(row(0).querySelector('.word-meaning').getAttribute('aria-pressed') === 'false', 'aria-pressed 回到 false');
+  ok(!row(1).classList.contains('on'), '另一行始终未被波及');
+});
+
+test('单词L 灰条支持键盘操作（回车 / 空格）', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响' }] });
+  app.renderWords();
+  const box = w.document.querySelector('#wordBoard .word-meaning');
+  ok(box.getAttribute('tabindex') === '0' && box.getAttribute('role') === 'button', '灰条可聚焦且语义为按钮');
+  box.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  ok(box.closest('.word-item').classList.contains('on'), '回车揭开');
+  box.dispatchEvent(new w.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+  ok(!box.closest('.word-item').classList.contains('on'), '空格遮回');
+  // 落在卡片其它位置的点击 / 回车不应误触发
+  const head = w.document.querySelector('#wordBoard .word-card-count');
+  click(w, head);
+  ok(!w.document.querySelector('#wordBoard .word-item').classList.contains('on'), '点卡片头部不误触发揭开');
+  head.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  ok(!w.document.querySelector('#wordBoard .word-item').classList.contains('on'), '卡片其它区域回车不误触发');
+});
+
+test('单词L 切换页面 / 重渲染后遮挡状态复位', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响' }] });
+  app.renderWords();
+  click(w, w.document.querySelector('#wordBoard .word-meaning'));
+  ok(w.document.querySelector('#wordBoard .word-item').classList.contains('on'), '已揭开');
+  app.switchPage('ledger');
+  app.switchPage('words');
+  ok(!w.document.querySelector('#wordBoard .word-item').classList.contains('on'), '重渲染后回到全部遮挡');
+});
+
+test('单词L 释义渲染前同样转义（防 XSS）', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'safe', meaning: '<img src=x onerror=alert(1)>' }] });
+  app.renderWords();
+  const html = w.document.getElementById('wordBoard').innerHTML;
+  ok(html.indexOf('&lt;img') > -1, '释义里的尖括号被转义为实体');
+  ok(html.indexOf('<img') === -1, '未注入真实 <img> 元素');
+});
+
+test('单词L 编辑回填带释义、保存后释义保留且词 id 不变', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  const c = app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响' }, { text: 'effect' }] });
+  const idAffect = c.words[0].id;
+  app.renderWords();
+  click(w, w.document.querySelector('#wordBoard .word-card button[data-act="edit"]'));
+  const ta = w.document.getElementById('wordInput');
+  ok(ta.value === 'affect v. 影响\neffect', '回填为「单词 释义」，无释义的词不补尾随空格');
+  setVal(w, ta, 'affect v. 影响，感动\neffect n. 效果，作用');
+  ok(w.document.getElementById('wordHint').textContent.indexOf('2 个含释义') > -1, '提示实时统计含释义词数');
+  click(w, w.document.getElementById('modalOk'));
+  const after = app.Store.getWordCard(c.id);
+  ok(after.words[0].meaning === 'v. 影响，感动', '释义更新成功');
+  ok(after.words[0].id === idAffect, '词 id 在编辑后保持稳定');
+  ok(after.words[1].text === 'effect' && after.words[1].meaning === 'n. 效果，作用', '原本无释义的词补上了释义');
+  ok(w.document.querySelectorAll('#wordBoard .word-item').length === 2, '界面同步更新');
+});
+
+test('单词L 新增卡片：空行被丢弃，释义随词存入', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.renderWords();
+  click(w, w.document.getElementById('wordAddBtn'));
+  setVal(w, w.document.getElementById('wordInput'), 'affect v. 影响\n   \ndesert n. 沙漠');
+  click(w, w.document.getElementById('modalOk'));
+  const card = app.Store.getWordCards()[0];
+  ok(card.words.length === 2, '空行不算词');
+  ok(card.words[0].meaning === 'v. 影响' && card.words[1].meaning === 'n. 沙漠', '释义被存入数据');
+});
+
+test('单词L 旧单词数据（无 meaning）加载后自动兜底且版本不升', (w) => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const legacy = JSON.stringify({
+    version: 6,
+    wordCards: [{ id: 'wc_old', words: [{ id: 'w_a', text: 'affect' }, { id: 'w_b', text: 'effect' }], createdAt: 1, updatedAt: 1 }],
+  });
+  const dom = new JSDOM(html, { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  dom.window.localStorage.setItem('life_assistant_v1', legacy);
+  dom.window.eval('(function(){' + fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8') +
+    'window.__app={Store, DATA_VERSION};})();');
+  dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded', { bubbles: true }));
+  const d = dom.window.__app.Store.data;
+  ok(d.version === 6 && dom.window.__app.DATA_VERSION === 6, '版本保持 6（释义走 sanitize 兜底，非结构变更）');
+  ok(d.wordCards.length === 1, '旧卡片未被丢弃');
+  ok(d.wordCards[0].words.length === 2, '旧单词未被丢弃');
+  ok(d.wordCards[0].words[0].meaning === '', '旧词自动补空释义');
+  ok(d.wordCards[0].words[0].id === 'w_a' && d.wordCards[0].words[1].id === 'w_b', '旧词 id 原样保留');
+});
+
+test('单词L 样式：灰条固定尺寸 + 揭开切换，复用既有 token', (w) => {
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  const bar = css.match(/\.word-meaning-bar\s*\{[^}]*\}/);
+  ok(!!bar, '存在灰条规则');
+  ok(!!bar && /width:\s*58px/.test(bar[0]) && /height:\s*15px/.test(bar[0]), '灰条固定 58×15，不随释义长短变化');
+  ok(!!bar && /var\(--ink-200\)/.test(bar[0]), '灰条底色复用 --ink-200');
+  const txt = css.match(/\.word-meaning-text\s*\{[^}]*\}/);
+  ok(!!txt && /display:\s*none/.test(txt[0]), '释义默认隐藏');
+  ok(!!txt && /var\(--ink-500\)/.test(txt[0]) && /var\(--fs-sm\)/.test(txt[0]), '释义复用次级文字色与字号 token');
+  ok(/\.word-item\.on\s+\.word-meaning-bar\s*\{[^}]*display:\s*none/.test(css), '揭开后灰条让位');
+  ok(/\.word-item\.on\s+\.word-meaning-text\s*\{[^}]*display:\s*inline/.test(css), '揭开后释义显现');
 });
 
 /* =========================================================================

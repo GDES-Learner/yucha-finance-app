@@ -8,7 +8,7 @@
 
 /* ---------------------- 常量 ---------------------- */
 const STORE_KEY = 'life_assistant_v1';
-const DATA_VERSION = 5;
+const DATA_VERSION = 6;
 const DEFAULT_LIMIT = 1500;
 /** 左上角应用名称的默认值（用户可在界面随时修改，覆盖后存于 data.appName） */
 const DEFAULT_APP_NAME = '鱼叉的专属app';
@@ -93,6 +93,14 @@ const SHOW_COVER_TYPES = ['none', 'url', 'local', 'ai'];
 const SHOW_SECTION_LIMIT = 6;
 /** 单张封面上限（字节），超出拒绝写入 IndexedDB */
 const COVER_MAX_BYTES = 5 * 1024 * 1024;
+
+/* ---------------------- 英语单词常量 ---------------------- */
+/* 一张卡片 = 一组词（1~N 个）；「单个单词」就是只有 1 个词的卡片。
+   词与词之间互相独立、各占一行，便于区分形近词。 */
+/** 单个单词最大长度（字符），超出截断，防止极端输入撑破卡片 */
+const WORD_MAX_LEN = 40;
+/** 单个释义最大长度（字符），超出截断；量级对齐 normalizeShow 里的 genre */
+const MEANING_MAX_LEN = 60;
 
 /* 账户顺序：微信 → 支付宝 → 银行（微信为默认付款方式）
    微信在金库中拆分为「零钱 / 零钱通」；记账扣款默认走「零钱」。 */
@@ -284,6 +292,108 @@ function normalizeWatchLog(l) {
   return true;
 }
 
+/* ---------------------- 英语单词规范化（纯函数，可单测） ---------------------- */
+/**
+ * 规范化一个单词。接受字符串（旧写法）或 { id, text, meaning } 对象，统一产出对象形式。
+ * 每个词保留稳定 id：后续加「复习记录」时可直接按词挂数据，无需再迁移结构。
+ * meaning 为可选中文字义，缺省为空串（旧数据自动兜底，故无需升 DATA_VERSION）。
+ * 返回 false 表示该词非法（空串）应被丢弃。
+ */
+function normalizeWord(w) {
+  const src = (w && typeof w === 'object') ? w : { text: w };
+  const text = strOr(src.text).trim().slice(0, WORD_MAX_LEN);
+  if (!text) return false;
+  return {
+    id: strOr(src.id) || 'w_' + uid(),
+    text,
+    meaning: strOr(src.meaning).trim().slice(0, MEANING_MAX_LEN),
+  };
+}
+
+/**
+ * 规范化一张单词卡片；返回 false 表示该卡非法应被丢弃。
+ * 空卡（没有任何有效单词）直接丢弃；同卡内大小写不敏感去重。
+ */
+function normalizeWordCard(c) {
+  if (!c || typeof c !== 'object') return false;
+  const raw = Array.isArray(c.words) ? c.words : [];
+  const words = [];
+  const seen = new Set();
+  raw.forEach((w) => {
+    const nw = normalizeWord(w);
+    if (!nw) return;
+    const key = nw.text.toLowerCase();
+    if (seen.has(key)) return;   // 同一张卡里不重复存同一个词
+    seen.add(key);
+    words.push(nw);
+  });
+  if (!words.length) return false;
+
+  c.id = strOr(c.id) || 'wc_' + uid();
+  c.words = words;
+  c.createdAt = Number(c.createdAt) || Date.now();
+  c.updatedAt = Number(c.updatedAt) || c.createdAt;
+  return true;
+}
+
+/**
+ * 把「一行一个单词」的文本框内容解析为 [{ text, meaning }] 数组。
+ * 每行格式：`单词` 或 `单词<空白>释义` —— 按行内**第一个空白**切分，释义可含空格。
+ * 逐行 trim、丢空行、只按换行切分；按单词（不区分大小写）去重，保留先出现者。
+ */
+function parseWordEntries(text) {
+  const out = [];
+  const seen = new Set();
+  String(text == null ? '' : text).split(/\r?\n/).forEach((line) => {
+    const t = line.trim();
+    if (!t) return;
+    const i = t.search(/\s/);
+    const word = (i < 0 ? t : t.slice(0, i)).slice(0, WORD_MAX_LEN);
+    const meaning = (i < 0 ? '' : t.slice(i + 1)).trim().slice(0, MEANING_MAX_LEN);
+    if (!word) return;
+    const key = word.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ text: word, meaning });
+  });
+  return out;
+}
+
+/**
+ * 把文本框内容解析为单词字符串数组（= parseWordEntries 只取词形的简写）。
+ * 契约保持不变：既有调用方与测试依赖「返回字符串数组」。
+ */
+function parseWordsInput(text) {
+  return parseWordEntries(text).map((e) => e.text);
+}
+
+/**
+ * 编辑保存时按词形（不区分大小写）沿用旧词 id，保证词的 id 在多次编辑后保持稳定，
+ * 后续「复习记录」按 id 挂数据才不会因编辑而断链。词形匹配不到的新词则不带 id，由
+ * normalizeWord 生成。
+ */
+function mergeWordIds(entries, oldWords) {
+  const map = new Map();
+  (oldWords || []).forEach((w) => {
+    if (w && w.text) map.set(String(w.text).toLowerCase(), w.id);
+  });
+  return (entries || []).map((e) => {
+    const id = map.get(String(e.text).toLowerCase());
+    return id ? { id, text: e.text, meaning: e.meaning } : { text: e.text, meaning: e.meaning };
+  });
+}
+
+/** 搜索：匹配卡内任意单词或释义（不区分大小写）；空关键词返回全部（新数组） */
+function filterWordCards(list, query) {
+  const q = String(query || '').trim().toLowerCase();
+  const src = list || [];
+  if (!q) return src.slice();
+  return src.filter((c) => (c.words || []).some(
+    (w) => String(w && w.text || '').toLowerCase().indexOf(q) > -1
+      || String(w && w.meaning || '').toLowerCase().indexOf(q) > -1
+  ));
+}
+
 /* ---------------------- 数据层 ---------------------- */
 const Store = {
   data: null,
@@ -319,7 +429,7 @@ const Store = {
     return this.data;
   },
 
-  /** 数据版本迁移：v1→v2（餐饮→吃饭）；v2→v3（微信拆为零钱/零钱通）；v3→v4（新增观影模块）；v4→v5（一季一条） */
+  /** 数据版本迁移：v1→v2（餐饮→吃饭）；v2→v3（微信拆为零钱/零钱通）；v3→v4（新增观影模块）；v4→v5（一季一条）；v5→v6（新增英语单词模块） */
   migrate() {
     const v = Number(this.data.version || 1);
 
@@ -364,6 +474,12 @@ const Store = {
         delete s.season;
         delete s.totalSeasons;
       });
+    }
+
+    if (v < 6) {
+      // v5 → v6：新增「英语单词」模块，老数据补空数组；
+      // 不改动 transactions / budgets / vault / shows / watchLogs 中任何既有字段。
+      if (!Array.isArray(this.data.wordCards)) this.data.wordCards = [];
     }
 
     this.data.version = DATA_VERSION;
@@ -413,6 +529,10 @@ const Store = {
     const showIds = new Set(this.data.shows.map((s) => s.id));
     this.data.watchLogs = this.data.watchLogs.filter((l) => showIds.has(l.showId));
 
+    // 英语单词：卡片数组（非法条目直接丢弃，空卡也丢）
+    if (!Array.isArray(this.data.wordCards)) this.data.wordCards = [];
+    this.data.wordCards = this.data.wordCards.filter((c) => normalizeWordCard(c));
+
     // 应用名称兜底：缺失 / 非字符串 / 空串 → 回落到默认名
     if (typeof this.data.appName !== 'string' || !this.data.appName.trim()) {
       this.data.appName = DEFAULT_APP_NAME;
@@ -431,6 +551,7 @@ const Store = {
       customNav: [],                  // 预留扩展功能
       shows: [],                      // 观影：剧集
       watchLogs: [],                  // 观影：观看记录
+      wordCards: [],                  // 英语单词：卡片（一卡一组词，1~N 个）
     };
     this.save();
   },
@@ -613,6 +734,38 @@ const Store = {
       .filter((l) => l.showId === showId)
       .sort((a, b) => b.at - a.at);
     return limit ? list.slice(0, limit) : list;
+  },
+
+  /* --- 英语单词：卡片 --- */
+  getWordCards() { return this.data.wordCards; },
+  getWordCard(id) { return this.data.wordCards.find((c) => c.id === id); },
+
+  /** 新增一张卡片。words 可以是字符串数组或 { text } 对象数组；无有效单词则拒绝 */
+  addWordCard(card) {
+    const c = Object.assign({}, card);
+    if (!normalizeWordCard(c)) return null;
+    this.data.wordCards.push(c);
+    this.save();
+    return c;
+  },
+
+  /** 更新卡片（如替换整组单词）。更新后无有效单词则拒绝 */
+  updateWordCard(id, patch) {
+    const c = this.getWordCard(id);
+    if (!c) return null;
+    Object.assign(c, patch);
+    if (!normalizeWordCard(c)) return null;
+    c.updatedAt = Date.now();
+    this.save();
+    return c;
+  },
+
+  removeWordCard(id) {
+    const i = this.data.wordCards.findIndex((c) => c.id === id);
+    if (i < 0) return false;
+    this.data.wordCards.splice(i, 1);
+    this.save();
+    return true;
   },
 };
 
@@ -1948,6 +2101,202 @@ function initShowsPage() {
 }
 
 /* =========================================================================
+   英语单词 —— 渲染 / 弹窗 / 初始化
+   卡片是「内容层」，沿用实体白卡；弹窗 / Toast 走全局毛玻璃，无需另写样式。
+   ========================================================================= */
+
+/** 卡片排序：最近更新在前（新加的卡片自然排在最上面） */
+function sortWordCards(list) {
+  return (list || []).slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+/**
+ * 单个单词行的 HTML（每行的 li 必须保留 .word-item，测试/样式按它计数）。
+ * 有释义：渲染「固定宽度灰条 + 释义」两块，默认灰条盖住释义，点击互切（见 toggleWordMeaning）。
+ * 无释义：只渲染单词本身，不出现灰条也不留占位。
+ */
+function wordItemHtml(w) {
+  const text = escapeHtml(w.text);
+  const meaning = strOr(w.meaning).trim();
+  if (!meaning) {
+    return `<li class="word-item"><span class="word-text">${text}</span></li>`;
+  }
+  return `<li class="word-item"><span class="word-text">${text}</span>`
+    + `<span class="word-meaning" role="button" tabindex="0" aria-pressed="false" title="点击查看释义">`
+    + `<span class="word-meaning-bar" aria-hidden="true"></span>`
+    + `<span class="word-meaning-text">${escapeHtml(meaning)}</span>`
+    + `</span></li>`;
+}
+
+/** 一张单词卡片的 HTML（高度随词数自然变化，由 .word-board 瀑布流排列） */
+function wordCardHtml(card) {
+  const words = Array.isArray(card.words) ? card.words : [];
+  const id = escapeHtml(card.id);
+  const items = words.map(wordItemHtml).join('');
+  return `
+    <article class="word-card" data-id="${id}">
+      <div class="word-card-head">
+        <span class="word-card-count">${icon('layers')}${words.length} 个词</span>
+        <div class="word-card-acts">
+          <button class="btn-icon" data-act="edit" data-id="${id}" title="编辑" aria-label="编辑卡片">${icon('pencil')}</button>
+          <button class="btn-icon del" data-act="delete" data-id="${id}" title="删除" aria-label="删除卡片">${icon('trash-2')}</button>
+        </div>
+      </div>
+      <ul class="word-list">${items}</ul>
+    </article>`;
+}
+
+/**
+ * 切换某一行的「遮挡 / 揭开」状态：只改 DOM class，不写 Store。
+ * 因此切页重渲染或刷新后自动回到全部遮挡（复习时总能先自测再揭晓）。
+ */
+function toggleWordMeaning(li) {
+  if (!li) return;
+  const on = li.classList.toggle('on');
+  const box = li.querySelector('.word-meaning');
+  if (box) {
+    box.setAttribute('aria-pressed', on ? 'true' : 'false');
+    box.setAttribute('title', on ? '点击遮住释义' : '点击查看释义');
+  }
+}
+
+/** 空态提示 */
+function renderEmptyWords() {
+  return `
+    <div class="empty">
+      <span class="empty-icon">${icon('spell-check')}</span>
+      <span class="empty-title">还没有单词卡片</span>
+      <span class="empty-desc">点击右上角「新增卡片」，每行输入一个单词，一组形近词放同一张卡</span>
+    </div>`;
+}
+
+/** 英语单词页总渲染入口 */
+function renderWords() {
+  const board = $('#wordBoard');
+  if (!board) return;
+  const all = sortWordCards(Store.getWordCards());
+  board.innerHTML = all.length ? all.map(wordCardHtml).join('') : renderEmptyWords();
+  refreshIcons(board);
+}
+
+/** 新增卡片 */
+function openAddWordCardModal() { openWordCardModal(null); }
+
+/** 编辑卡片（把整组词回填到文本框，可改可删） */
+function openEditWordCardModal(id) {
+  const c = Store.getWordCard(id);
+  if (!c) return;
+  openWordCardModal(c);
+}
+
+/** 新增 / 编辑共用的弹窗（一行一个单词，可在词后空一格写释义，可整段粘贴） */
+function openWordCardModal(card) {
+  const editing = !!card;
+  // 回填：无释义的词只写词形，避免多出一个无意义的尾随空格
+  const initial = editing
+    ? card.words.map((w) => (w.meaning ? `${w.text} ${w.meaning}` : w.text)).join('\n')
+    : '';
+  openModal(`
+    <h3>${icon(editing ? 'pencil' : 'plus')}${editing ? '编辑卡片' : '新增卡片'}</h3>
+    <p>每行输入一个单词，可在单词后空一格写中文释义；一张卡片放一组形近词，只放一个词也可以。</p>
+    <div class="form-field">
+      <label class="field-label" for="wordInput">${icon('languages')}单词 <span class="opt">每行「单词 释义」</span></label>
+      <textarea class="input" id="wordInput" rows="5"
+        placeholder="affect v. 影响，感动&#10;effect n. 效果，作用&#10;infect v. 传染，感染"></textarea>
+    </div>
+    <div class="field-hint" id="wordHint"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-primary" id="modalOk">${editing ? '保存' : '添加'}</button>
+    </div>
+  `);
+
+  const ta = $('#wordInput');
+  const hint = $('#wordHint');
+  ta.value = initial;
+
+  const refreshHint = () => {
+    const entries = parseWordEntries(ta.value);
+    const withMeaning = entries.filter((e) => e.meaning).length;
+    hint.textContent = entries.length
+      ? `共 ${entries.length} 个词${withMeaning ? `，其中 ${withMeaning} 个含释义` : '（还没填释义）'}`
+      : '至少输入一个单词';
+    hint.classList.toggle('err', entries.length === 0);
+  };
+  refreshHint();
+  ta.addEventListener('input', refreshHint);
+  ta.focus();
+  try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) { /* 忽略 */ }
+
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    const entries = parseWordEntries(ta.value);
+    if (!entries.length) { toast('请至少输入一个单词', 'err'); ta.focus(); return; }
+    if (editing) {
+      // 按词形沿用旧 id，编辑后词的 id 不变
+      Store.updateWordCard(card.id, { words: mergeWordIds(entries, card.words) });
+      toast('卡片已更新');
+    } else {
+      Store.addWordCard({ words: entries });
+      toast('已添加卡片');
+    }
+    closeModal();
+    renderWords();
+  });
+}
+
+/** 删除卡片（二次确认，沿用通用弹窗） */
+function openDeleteWordCardModal(id) {
+  const c = Store.getWordCard(id);
+  if (!c) return;
+  const preview = c.words.map((w) => w.text).join('、');
+  const shown = preview.length > 60 ? preview.slice(0, 60) + '…' : preview;
+  openModal(`
+    <h3>${icon('trash-2')}删除卡片</h3>
+    <p>将删除这张卡片（${c.words.length} 个词：${escapeHtml(shown)}），此操作不可撤销。</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel">取消</button>
+      <button class="btn btn-danger-soft" id="modalOk">${icon('trash-2')}删除</button>
+    </div>
+  `);
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    Store.removeWordCard(id);
+    closeModal();
+    renderWords();
+    toast('卡片已删除');
+  });
+}
+
+function initWordsPage() {
+  const page = document.getElementById('page-words');
+  if (!page) return;
+
+  // 容器级事件委托：卡片被重建后无需重新绑定
+  page.addEventListener('click', (e) => {
+    const t = e.target;
+    if (t.closest('#wordAddBtn')) { openAddWordCardModal(); return; }
+    // 灰条 / 释义：点一下切换遮挡状态（逐词独立，互不影响）
+    const box = t.closest('.word-meaning');
+    if (box) { toggleWordMeaning(box.closest('.word-item')); return; }
+    const btn = t.closest('button[data-act][data-id]');
+    if (btn) {
+      if (btn.dataset.act === 'edit') openEditWordCardModal(btn.dataset.id);
+      else if (btn.dataset.act === 'delete') openDeleteWordCardModal(btn.dataset.id);
+    }
+  });
+
+  // 键盘等价操作：灰条/释义可聚焦，回车或空格同样切换
+  page.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    const box = e.target.closest && e.target.closest('.word-meaning');
+    if (!box) return;
+    e.preventDefault();
+    toggleWordMeaning(box.closest('.word-item'));
+  });
+}
+
+/* =========================================================================
    页面路由
    ========================================================================= */
 function switchPage(page) {
@@ -1957,6 +2306,7 @@ function switchPage(page) {
   if (page === 'stats') renderStats();
   if (page === 'vault') renderVault();
   if (page === 'shows') renderShows();
+  if (page === 'words') renderWords();
 }
 
 $$('.nav-item[data-page]').forEach((btn) => {
@@ -3127,6 +3477,7 @@ function init() {
   initEntryForms();
   initMonthlySummary();
   initShowsPage();
+  initWordsPage();
   switchPage('ledger');
   renderLedger();
   refreshIcons(document.body);

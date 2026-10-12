@@ -1718,3 +1718,95 @@ select.f-category.fallback-native {
   .st-watching { background: var(--brand-500); }
   .st-paused { background: var(--warn); }
 }
+
+/* =========================================================================
+   27. 英语单词页
+   ========================================================================= */
+/* 卡片板：瀑布流。用多列布局让高低不一的卡片自然错落、互不留空洞。
+   注意：多列布局「先填满一列再填下一列」，因此卡片顺序是纵向流动的。 */
+.word-board {
+  columns: 240px;
+  column-gap: var(--sp-3);
+}
+
+/* 单词卡片：内容层，实体白卡（与金库卡 / 海报卡同规格） */
+.word-card {
+  break-inside: avoid;                 /* 卡片不被拆到两列 */
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+  background: var(--surface);
+  border: 1px solid rgba(16, 40, 30, 0.055);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-xs);
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  transition: box-shadow var(--dur-base) var(--ease-out),
+              transform var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out);
+}
+.word-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+  border-color: rgba(23, 160, 115, .22);
+}
+
+.word-card-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  min-height: 26px;
+}
+.word-card-count {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-micro); font-weight: 560; color: var(--ink-400);
+}
+.word-card-count .icon { width: 13px; height: 13px; color: var(--ink-300); }
+.word-card-acts { margin-left: auto; display: flex; gap: 2px; }
+.word-card-acts .btn-icon { width: 26px; height: 26px; }
+.word-card-acts .btn-icon .icon { width: 14px; height: 14px; }
+.word-card-acts .btn-icon.del:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* 词列表：一个词一行，行间细分隔线，便于区分形近词 */
+.word-list { display: flex; flex-direction: column; margin-top: 4px; }
+.word-item {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px;
+  padding: 8px 2px;
+  border-top: 1px solid var(--ink-50);
+}
+.word-item:first-child { border-top: none; }
+.word-text {
+  flex: 0 0 auto; max-width: 100%;
+  font-size: var(--fs-body); font-weight: 560; color: var(--ink-900);
+  letter-spacing: .1px; word-break: break-word;
+}
+
+/* 释义遮挡：固定宽度灰条默认盖住释义；点一下灰条消失、释义显现，再点释义可遮回。
+   flex: 0 1 auto + min-width: 0 让过长释义在卡片内换行（必要时自动落到下一行），
+   而不是把卡片撑破。释义太长时整块换行到下一行，不挤压单词。 */
+.word-meaning {
+  flex: 0 1 auto; min-width: 0;
+  display: inline-flex; align-items: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+.word-meaning-bar {
+  flex: 0 0 auto;
+  width: 58px; height: 15px;
+  border-radius: 5px;
+  background: var(--ink-200);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.word-meaning:hover .word-meaning-bar { background: var(--ink-300); }
+.word-meaning:focus-visible .word-meaning-bar { box-shadow: 0 0 0 2px var(--brand-300); }
+.word-meaning-text {
+  display: none;
+  font-size: var(--fs-sm); font-weight: 450; color: var(--ink-500);
+  line-height: 1.45; word-break: break-word;
+}
+/* 揭开后：灰条让位，释义显现；同一行内两个块互斥显示 */
+.word-item.on .word-meaning-bar { display: none; }
+.word-item.on .word-meaning-text { display: inline; }
+
+/* 窄屏：单列，避免单词被挤断 */
+@media (max-width: 560px) {
+  .word-board { columns: 1; }
+}
