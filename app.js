@@ -784,6 +784,8 @@ const state = {
   showSort: 'updated',
   showExpanded: { continue: false, watching: false, want: false, watched: false, paused: false },
   showSectionLimit: SHOW_SECTION_LIMIT,
+  // 英语单词页 UI 状态（切页不重置，保持用户搜索词）
+  wordQuery: '',
 };
 
 /* ---------------------- Toast ---------------------- */
@@ -820,7 +822,9 @@ function openModal(html) {
       Array.prototype.slice.call(modal.childNodes).forEach((node) => {
         if (node !== actions) scroll.appendChild(node);
       });
-      modal.appendChild(scroll);
+      // 插到操作区**之前**：.modal 是 column 布局，操作区必须是最后一个子元素
+      // 才落在底部（否则按钮会跑到标题上方）。actions 为 null 时等价于 appendChild。
+      modal.insertBefore(scroll, actions);
     }
   } catch (e) {
     // 结构处理失败不影响弹窗正常显示
@@ -2170,6 +2174,16 @@ function renderEmptyWords() {
     </div>`;
 }
 
+/** 搜索无结果（与观影页同款空态，图标沿用既有 lucide 图标） */
+function renderNoMatchWords() {
+  return `
+    <div class="empty">
+      <span class="empty-icon">${icon('search-x')}</span>
+      <span class="empty-title">没有匹配的卡片</span>
+      <span class="empty-desc">搜索会同时匹配单词与释义，换个关键词试试</span>
+    </div>`;
+}
+
 /* --- 释义「短条 / 长块」判定 -------------------------------------------------
    短释义沿用统一 58×15 小灰条（不泄露长短）；需要两行的长释义用「等大的灰块」。
    两类外观都只作用在绝对定位的覆盖层上，所以判定本身**不参与布局**：
@@ -2254,12 +2268,38 @@ function scheduleWordLineRecalc() {
   wordLineTimer = setTimeout(measureWordLines, 120);
 }
 
-/** 英语单词页总渲染入口 */
+/** 英语单词页总渲染入口（搜索只筛卡片、不动数据，清空关键词即恢复全部） */
 function renderWords() {
   const board = $('#wordBoard');
   if (!board) return;
+
+  // 同步搜索框当前值（切页回来 / 重渲染后保持一致）
+  const searchEl = $('#wordSearch');
+  if (searchEl && searchEl.value !== state.wordQuery) searchEl.value = state.wordQuery;
+
   const all = sortWordCards(Store.getWordCards());
-  board.innerHTML = all.length ? all.map(wordCardHtml).join('') : renderEmptyWords();
+  const matched = all.length ? sortWordCards(filterWordCards(all, state.wordQuery)) : [];
+
+  // 有搜索词时才显示命中数量（沿用观影页「筛选结果 N」的反馈方式）
+  const result = $('#wordResult');
+  if (result) {
+    result.textContent = strOr(state.wordQuery).trim() ? `找到 ${matched.length} 张卡片` : '';
+  }
+
+  if (!all.length) {
+    board.innerHTML = renderEmptyWords();
+    refreshIcons(board);
+    layoutWordCardSpans(board);   // 摘掉 .packed：1px 行高会让空态塌陷
+    return;
+  }
+  if (!matched.length) {
+    board.innerHTML = renderNoMatchWords();
+    refreshIcons(board);
+    layoutWordCardSpans(board);   // 同上，无结果态也一样
+    return;
+  }
+
+  board.innerHTML = matched.map(wordCardHtml).join('');
   refreshIcons(board);
   markWordMeaningLines(board);
   layoutWordCardSpans(board);
@@ -2380,6 +2420,19 @@ function initWordsPage() {
     e.preventDefault();
     toggleWordMeaning(box.closest('.word-item'));
   });
+
+  // 搜索（防抖 200ms，与观影页一致）：同时匹配单词与释义
+  const searchEl = document.getElementById('wordSearch');
+  if (searchEl) {
+    let timer = null;
+    searchEl.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        state.wordQuery = searchEl.value || '';
+        renderWords();
+      }, 200);
+    });
+  }
 
   // 卡片宽度随窗口变化 → 释义折行数可能变，去抖后重算「短条 / 长块」
   // （只切 class，不动 DOM、不动已揭开状态）

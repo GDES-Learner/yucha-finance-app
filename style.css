@@ -1722,6 +1722,20 @@ select.f-category.fallback-native {
 /* =========================================================================
    27. 英语单词页
    ========================================================================= */
+/* 搜索栏：与观影页 .shows-toolbar / .show-search 完全同规格，仅命名区分 */
+.word-toolbar {
+  display: flex; align-items: center; gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.word-search { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
+.word-search .icon {
+  position: absolute; left: 12px; width: 16px; height: 16px;
+  color: var(--ink-300); pointer-events: none;
+}
+.word-search .input { padding-left: 36px; }
+/* 命中数量：无关键词时 textContent 为空 → 宽度归零，不占位 */
+.word-result { flex: none; font-size: var(--fs-sm); color: var(--ink-400); }
+
 /* 卡片板：固定网格。卡片位置恒定、永不换列，新增卡片只往后排（行优先）。
    不用多列瀑布流：多列布局会按内容高度做「列平衡」，一旦某张卡因解开长释义
    而变高，别的卡片就会被重新分配到其它列 —— 那正是「位置乱动」的来源。 */
@@ -1830,7 +1844,9 @@ select.f-category.fallback-native {
 .word-item.on .word-meaning-bar { display: none; }
 .word-item.on .word-meaning-text { visibility: visible; }
 
-/* 窄屏：单列，避免单词被挤断 */
+/* 窄屏：单列，避免单词被挤断；搜索栏换行、命中数量右对齐 */
 @media (max-width: 560px) {
   .word-board { grid-template-columns: 1fr; }
+  .word-toolbar { flex-direction: column; align-items: stretch; }
+  .word-result { text-align: right; }
 }

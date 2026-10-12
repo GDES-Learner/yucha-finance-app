@@ -66,7 +66,8 @@ function boot() {
     'renderCloudCard, openLoginModal, cloudPush, cloudPull, scheduleAutoPush, escapeHtml, ' +
     'WORD_MAX_LEN, MEANING_MAX_LEN, normalizeWord, normalizeWordCard, ' +
     'parseWordsInput, parseWordEntries, mergeWordIds, filterWordCards, ' +
-    'sortWordCards, wordCardHtml, wordItemHtml, toggleWordMeaning, renderWords, renderEmptyWords, ' +
+    'sortWordCards, wordCardHtml, wordItemHtml, toggleWordMeaning, renderWords, ' +
+    'renderEmptyWords, renderNoMatchWords, ' +
     'openAddWordCardModal, openEditWordCardModal, openWordCardModal, openDeleteWordCardModal, ' +
     'isMeaningMultiline, markWordMeaningLines, measureWordLines, scheduleWordLineRecalc, ' +
     'WORD_CARD_GAP, layoutWordCardSpans, ' +
@@ -2955,6 +2956,146 @@ test('单词N 紧排不改卡片高度，揭开释义后跨行数也不变', (w)
   click(w, card.querySelector('.word-meaning-bar'));
   ok(board.querySelector('.word-card') === card, '揭开不重建卡片节点');
   ok(card.style.gridRowEnd === span, '揭开后跨行数不变（卡片高度不受可见性切换影响）');
+});
+
+/* =========================================================================
+   弹窗结构 & 英语单词页搜索
+   ========================================================================= */
+
+test('弹窗 操作区固定在底部：滚动区排在操作区之前', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.renderWords();
+  click(w, w.document.getElementById('wordAddBtn'));
+
+  const kids = Array.prototype.slice.call(w.document.getElementById('modal').children)
+    .map((el) => el.className);
+  ok(kids.indexOf('modal-scroll') > -1, '内容被包进 .modal-scroll 滚动区');
+  ok(kids[kids.length - 1] === 'modal-actions', '操作区是弹窗最后一个子元素（落在底部）');
+  ok(kids.indexOf('modal-scroll') < kids.indexOf('modal-actions'), '滚动区排在操作区之前');
+
+  // 全局修复：观影页的新增弹窗同样受益
+  click(w, w.document.getElementById('modalCancel'));
+  app.switchPage('shows');
+  click(w, w.document.getElementById('showAddBtn'));
+  const kids2 = Array.prototype.slice.call(w.document.getElementById('modal').children)
+    .map((el) => el.className);
+  ok(kids2[kids2.length - 1] === 'modal-actions', '观影页弹窗的操作区也在底部');
+  ok(kids2.indexOf('modal-scroll') < kids2.indexOf('modal-actions'), '观影页滚动区同样在操作区之前');
+});
+
+test('单词O 搜索框骨架齐备且样式复用既有 token', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.renderWords();
+  ok(!!w.document.getElementById('wordSearch'), '存在搜索框 #wordSearch');
+  ok(!!w.document.getElementById('wordResult'), '存在命中数量 #wordResult');
+  ok(w.document.getElementById('wordSearch').getAttribute('placeholder').indexOf('释义') > -1, '占位文案提示可按释义搜索');
+
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  const tb = css.match(/\.word-toolbar\s*\{[^}]*\}/);
+  ok(!!tb && /display:\s*flex/.test(tb[0]), '.word-toolbar 用 flex 排布');
+  ok(!!tb && /var\(--sp-3\)/.test(tb[0]), '工具栏间距复用 --sp-3');
+  const se = css.match(/\.word-search\s*\{[^}]*\}/);
+  ok(!!se && /position:\s*relative/.test(se[0]), '.word-search 相对定位，图标绝对定位在框内');
+  ok(!!se && /var\(--sp-3\)|flex:\s*1/.test(se[0]), '搜索框占满剩余宽度');
+  const ic = css.match(/\.word-search\s+\.icon\s*\{[^}]*\}/);
+  ok(!!ic && /var\(--ink-300\)/.test(ic[0]), '搜索图标复用 --ink-300');
+  ok(!!ic && /pointer-events:\s*none/.test(ic[0]), '图标不挡输入点击');
+  ok(/\.word-search\s+\.input\s*\{[^}]*padding-left:\s*36px/.test(css), '输入框左侧留出图标位');
+  const rs = css.match(/\.word-result\s*\{[^}]*\}/);
+  ok(!!rs && /var\(--ink-400\)/.test(rs[0]), '命中数量复用 --ink-400');
+});
+
+test('单词O 搜索按单词筛选，清空即恢复全部', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响' }, { text: 'effect', meaning: 'n. 效果' }] });
+  app.Store.addWordCard({ words: [{ text: 'desert', meaning: 'n. 沙漠' }, { text: 'dessert', meaning: 'n. 甜点' }] });
+  app.switchPage('words');
+  ok(w.document.querySelectorAll('#wordBoard .word-card').length === 2, '未搜索时显示全部卡片');
+  ok(w.document.getElementById('wordResult').textContent === '', '无关键词时不显示命中数量');
+
+  state(w).wordQuery = 'affect';
+  app.renderWords();
+  ok(w.document.querySelectorAll('#wordBoard .word-card').length === 1, '只留下命中单词的卡片');
+  ok(w.document.getElementById('wordResult').textContent.indexOf('1') > -1, '显示命中数量');
+  ok(w.document.getElementById('wordSearch').value === 'affect', '搜索框的值随状态同步');
+
+  state(w).wordQuery = '';
+  app.renderWords();
+  ok(w.document.querySelectorAll('#wordBoard .word-card').length === 2, '清空关键词恢复全部');
+  ok(w.document.getElementById('wordResult').textContent === '', '命中数量随之清空');
+});
+
+test('单词O 搜索同时匹配释义', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'desert', meaning: 'n. 沙漠；v. 抛弃' }] });
+  app.Store.addWordCard({ words: [{ text: 'stationery', meaning: 'n. 文具' }] });
+  app.switchPage('words');
+
+  state(w).wordQuery = '文具';
+  app.renderWords();
+  const cards = w.document.querySelectorAll('#wordBoard .word-card');
+  ok(cards.length === 1, '按释义也能筛出卡片');
+  ok(cards[0].textContent.indexOf('stationery') > -1, '命中的是含该释义的卡');
+  state(w).wordQuery = '';
+});
+
+test('单词O 搜索无结果时显示「没有匹配」空态，并摘掉紧排模式', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect' }] });
+  app.switchPage('words');
+  // jsdom 不实现布局（getBoundingClientRect 恒为 0），先给卡片高度打桩，
+  // 制造出「已经紧排」的状态，才能验证无结果时会把 .packed 摘掉
+  Array.prototype.slice.call(w.document.querySelectorAll('#wordBoard .word-card')).forEach((c) => {
+    c.getBoundingClientRect = () => ({ height: 120 });
+  });
+  app.layoutWordCardSpans(w.document.getElementById('wordBoard'));
+  ok(w.document.getElementById('wordBoard').classList.contains('packed'), '有卡片时处于紧排模式');
+
+  state(w).wordQuery = 'zzz不存在zzz';
+  app.renderWords();
+  const empty = w.document.querySelector('#wordBoard .empty');
+  ok(!!empty, '无结果显示空态');
+  ok(empty.textContent.indexOf('没有匹配') > -1, '无结果文案正确');
+  ok(empty.textContent.indexOf('还没有单词卡片') === -1, '不误用「还没有卡片」的初始空态');
+  ok(!w.document.getElementById('wordBoard').classList.contains('packed'),
+    '无结果态摘掉 .packed（1px 行高会让空态塌陷）');
+  state(w).wordQuery = '';
+});
+
+test('单词O 完全没有卡片时，始终显示初始空态', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.switchPage('words');
+  state(w).wordQuery = 'zzz';
+  app.renderWords();
+  const empty = w.document.querySelector('#wordBoard .empty');
+  ok(!!empty && empty.textContent.indexOf('还没有单词卡片') > -1, '无卡片时优先显示初始空态');
+  ok(!w.document.getElementById('wordBoard').classList.contains('packed'), '初始空态同样不带 .packed');
+  state(w).wordQuery = '';
+});
+
+test('单词O 搜索不写 Store，搜索态下揭开释义仍零位移', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响；感动，假装' }] });
+  app.switchPage('words');
+  state(w).wordQuery = 'affect';
+  app.renderWords();
+
+  const before = JSON.stringify(app.Store.data.wordCards);
+  const card = w.document.querySelector('#wordBoard .word-card');
+  const span = card.style.gridRowEnd;
+  click(w, card.querySelector('.word-meaning-bar'));
+  ok(JSON.stringify(app.Store.data.wordCards) === before, '搜索与揭开都不写 Store');
+  ok(w.document.querySelector('#wordBoard .word-card') === card, '揭开不重建卡片节点');
+  ok(card.style.gridRowEnd === span, '揭开后跨行数不变');
+  ok(w.document.querySelector('#wordBoard .word-item').classList.contains('on'), '搜索态下依然能揭开');
+  state(w).wordQuery = '';
 });
 
 /* =========================================================================

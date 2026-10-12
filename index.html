@@ -357,6 +357,16 @@
           </div>
         </header>
 
+        <!-- 搜索栏：同时匹配单词与释义（与观影页搜索栏同规格） -->
+        <div class="word-toolbar">
+          <div class="word-search">
+            <i data-lucide="search"></i>
+            <input type="search" class="input" id="wordSearch"
+                   placeholder="搜索单词 / 释义" aria-label="搜索单词卡片" />
+          </div>
+          <div class="word-result" id="wordResult" aria-live="polite"></div>
+        </div>
+
         <!-- 单词卡片板（固定网格：卡片位置恒定、永不换列，高度随词数变化） -->
         <div class="word-board" id="wordBoard"></div>
       </section>
