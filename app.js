@@ -3082,7 +3082,7 @@ function renderStats() {
   }
   refreshIcons(legend);
 
-  // 分类支出排行（按当月数据，反映长期结构）
+  // 当月分类支出排行（按所选日期所在月聚合，与上方环形图同月）
   renderStatsRank();
   // 近 7 日收支趋势
   renderStatsTrend(date);
@@ -3106,7 +3106,7 @@ function renderStats() {
   renderMonthlySummary();
 }
 
-/** 分类支出排行：按当前查看月份聚合 */
+/** 当月分类支出排行：按当前查看月份聚合 */
 function renderStatsRank() {
   const el = $('#statsRank');
   if (!el) return;
