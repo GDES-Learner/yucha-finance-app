@@ -1459,7 +1459,7 @@ test('观影F 观影页含搜索 / 排序 / 添加 / 统计 / 筛选 / 区块容
     .forEach((id) => ok(!!page.querySelector('#' + id), `存在 #${id}`));
 });
 
-test('观影F 底部外链指向 iioo.me 且新窗口打开', (w) => {
+test('观影F 观影页外链指向 iioo.me 且新窗口打开', (w) => {
   const a = w.document.querySelector('#showsLink');
   ok(!!a, '存在 #showsLink');
   ok(a.getAttribute('href') === 'https://iioo.me/', 'href 指向 https://iioo.me/');

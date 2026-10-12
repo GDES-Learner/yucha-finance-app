@@ -1940,7 +1940,7 @@ function initShowsPage() {
     });
   }
 
-  // 底部外链：确保新窗口打开（href 已在 HTML 设定，这里仅兜底）
+  // 观影页外链（位于页头「添加剧集」旁）：确保新窗口打开（href 已在 HTML 设定，这里仅兜底）
   const link = document.getElementById('showsLink');
   if (link) {
     link.addEventListener('click', () => { /* 交给浏览器默认行为；HREF/target 已在 HTML 声明 */ });

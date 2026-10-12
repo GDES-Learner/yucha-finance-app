@@ -1265,6 +1265,9 @@ select.f-category.fallback-native {
    ========================================================================= */
 .page-head .head-add { width: auto; padding: 9px 16px; border-radius: var(--r-sm); font-size: var(--fs-sm); }
 .page-head .head-add .icon { width: 16px; height: 16px; }
+/* 标题栏内的外链：与「添加剧集」按钮等高对齐 */
+.page-head .shows-link { padding: 9px 16px; border-radius: var(--r-sm); font-size: var(--fs-sm); }
+.page-head .shows-link .icon { width: 16px; height: 16px; }
 
 /* 工具栏：搜索 + 排序 */
 .shows-toolbar {
@@ -1458,8 +1461,7 @@ select.f-category.fallback-native {
 .poster-acts .btn-mini { padding: 5px 9px; font-size: var(--fs-micro); }
 .poster-acts .btn-mini:first-child { flex: 1; justify-content: center; }
 
-/* 底部外链 */
-.shows-link-row { margin-top: var(--sp-4); text-align: center; }
+/* 底部外链（已移至页头，保留药丸样式供页头内复用） */
 .shows-link {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--fs-sm); font-weight: 600; color: var(--brand-600);
@@ -1690,6 +1692,8 @@ select.f-category.fallback-native {
   .poster-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--sp-3); }
 }
 @media (max-width: 560px) {
+  .head-actions .shows-link { flex: 1; justify-content: center; }
+  .head-actions .head-add { flex: 1; justify-content: center; }
   .shows-toolbar { flex-direction: column; align-items: stretch; }
   .shows-toolbar .month-input { width: 100%; }
   .shows-stats { grid-template-columns: repeat(2, 1fr); gap: var(--sp-2); }
