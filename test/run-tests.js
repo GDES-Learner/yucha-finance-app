@@ -68,6 +68,8 @@ function boot() {
     'parseWordsInput, parseWordEntries, mergeWordIds, filterWordCards, ' +
     'sortWordCards, wordCardHtml, wordItemHtml, toggleWordMeaning, renderWords, renderEmptyWords, ' +
     'openAddWordCardModal, openEditWordCardModal, openWordCardModal, openDeleteWordCardModal, ' +
+    'isMeaningMultiline, markWordMeaningLines, measureWordLines, scheduleWordLineRecalc, ' +
+    'WORD_CARD_GAP, layoutWordCardSpans, ' +
     'initWordsPage };\n' +
     // coverPickerState 是被整体重新赋值的 let 变量，直接放进对象会快照化，
     // 因此用 getter 暴露实时值
@@ -107,6 +109,17 @@ function setVal(w, el, v) {
   el.value = v;
   el.dispatchEvent(new w.Event('input', { bubbles: true }));
   el.dispatchEvent(new w.Event('change', { bubbles: true }));
+}
+/**
+ * 把 style.css 内联注入 jsdom。
+ * jsdom 默认不加载外链样式表，计算样式（getComputedStyle）读不到任何规则；
+ * 需要验证「零位移结构契约」的用例先调它。
+ */
+function injectCss(w) {
+  const s = w.document.createElement('style');
+  s.textContent = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  w.document.head.appendChild(s);
+  return s;
 }
 const money = (n) => '¥' + (Number(n) || 0).toFixed(2);
 /** 取某个 jsdom 窗口里的应用内部 state（供测试直接改筛选条件） */
@@ -2582,9 +2595,13 @@ test('单词K v5 旧数据迁移：补 wordCards 空数组且不破坏原数据'
   ok(d.vault.wechat_change === 50, '原有金库未被破坏');
 });
 
-test('单词K 样式：实体白卡 + 瀑布流，复用既有 token', (w) => {
+test('单词K 样式：实体白卡 + 固定网格，复用既有 token', (w) => {
   const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
-  ok(/\.word-board\s*\{[^}]*columns:/.test(css), '.word-board 用多列实现瀑布流');
+  const board = css.match(/\.word-board\s*\{[^}]*\}/);
+  ok(!!board && /display:\s*grid/.test(board[0]), '.word-board 用网格排列');
+  ok(!!board && /repeat\(auto-fill,\s*minmax\(240px,\s*1fr\)\)/.test(board[0]), '列宽复用既有 auto-fill / minmax 范式');
+  ok(!!board && /align-items:\s*start/.test(board[0]), '矮卡不拉伸');
+  ok(!!board && !/[\s;{]columns\s*:/.test(board[0]), '已不再使用多列瀑布流（多列会按高度做列平衡 → 卡片换列）');
   ok(/\.word-card\s*\{[^}]*break-inside:\s*avoid/.test(css), '卡片不跨列断开');
   const m = css.match(/\.word-card\s*\{[^}]*\}/);
   ok(!!m && /var\(--surface\)/.test(m[0]), '卡片背景复用 --surface（实体白卡）');
@@ -2781,17 +2798,163 @@ test('单词L 旧单词数据（无 meaning）加载后自动兜底且版本不�
   ok(d.wordCards[0].words[0].id === 'w_a' && d.wordCards[0].words[1].id === 'w_b', '旧词 id 原样保留');
 });
 
-test('单词L 样式：灰条固定尺寸 + 揭开切换，复用既有 token', (w) => {
+test('单词L 样式：灰条为绝对覆盖层 + 揭开只切可见性，复用既有 token', (w) => {
   const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
   const bar = css.match(/\.word-meaning-bar\s*\{[^}]*\}/);
   ok(!!bar, '存在灰条规则');
-  ok(!!bar && /width:\s*58px/.test(bar[0]) && /height:\s*15px/.test(bar[0]), '灰条固定 58×15，不随释义长短变化');
+  ok(!!bar && /position:\s*absolute/.test(bar[0]) && /inset:\s*0/.test(bar[0]), '灰条是绝对定位覆盖层，不占布局空间（零位移前提）');
   ok(!!bar && /var\(--ink-200\)/.test(bar[0]), '灰条底色复用 --ink-200');
+  const short = css.match(/\.word-item\.w-short\s+\.word-meaning-bar\s*\{[^}]*\}/);
+  ok(!!short && /width:\s*58px/.test(short[0]) && /height:\s*15px/.test(short[0]), '短释义仍退化成 58×15 小灰条');
+  ok(!!short && /position:\s*absolute|inset:\s*auto/.test(short[0]), '小灰条同样走绝对定位，不参与布局');
   const txt = css.match(/\.word-meaning-text\s*\{[^}]*\}/);
-  ok(!!txt && /display:\s*none/.test(txt[0]), '释义默认隐藏');
+  ok(!!txt && /visibility:\s*hidden/.test(txt[0]), '释义常驻占位、只是默认不可见 → 行高恒定');
+  ok(!!txt && !/display:\s*none/.test(txt[0]), '释义不再用 display:none（那会改变布局、导致位移）');
   ok(!!txt && /var\(--ink-500\)/.test(txt[0]) && /var\(--fs-sm\)/.test(txt[0]), '释义复用次级文字色与字号 token');
   ok(/\.word-item\.on\s+\.word-meaning-bar\s*\{[^}]*display:\s*none/.test(css), '揭开后灰条让位');
-  ok(/\.word-item\.on\s+\.word-meaning-text\s*\{[^}]*display:\s*inline/.test(css), '揭开后释义显现');
+  ok(/\.word-item\.on\s+\.word-meaning-text\s*\{[^}]*visibility:\s*visible/.test(css), '揭开后释义显现');
+});
+
+/* =========================================================================
+   英语单词 —— M 揭开释义零位移（固定网格 + 释义常驻占位）
+   ========================================================================= */
+test('单词M 卡片板为固定网格，卡片永不换列', (w) => {
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  const board = css.match(/\.word-board\s*\{[^}]*\}/);
+  ok(!!board && /display:\s*grid/.test(board[0]), '.word-board 改为网格');
+  ok(!!board && /repeat\(auto-fill,\s*minmax\(240px,\s*1fr\)\)/.test(board[0]), '列宽复用既有 auto-fill / minmax 范式');
+  ok(!!board && /gap:/.test(board[0]), '行列间距走网格 gap');
+  ok(!!board && !/[\s;{]columns\s*:/.test(board[0]), '不再使用多列（grid-template-columns 不算）');
+  ok(/@media\s*\(max-width:\s*560px\)\s*\{\s*\.word-board\s*\{[^}]*grid-template-columns:\s*1fr/.test(css), '窄屏单列');
+  const card = css.match(/\.word-card\s*\{[^}]*\}/);
+  ok(!!card && /margin:\s*0\s*;/.test(card[0]), '卡片外边距归零，行距交给网格 gap，避免叠加');
+});
+
+test('单词M 零位移结构契约：文字常驻占位 + 灰条绝对定位 + 揭开不重建 DOM', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响，感动' }] });
+  app.renderWords();
+  injectCss(w);
+
+  const card = w.document.querySelector('#wordBoard .word-card');
+  const row = w.document.querySelector('#wordBoard .word-item');
+  const text = row.querySelector('.word-meaning-text');
+  const bar = row.querySelector('.word-meaning-bar');
+
+  ok(w.getComputedStyle(text).display !== 'none', '释义文字始终参与布局（不再是 display:none）');
+  ok(w.getComputedStyle(text).visibility === 'hidden', '遮住时只是不可见');
+  ok(w.getComputedStyle(bar).position === 'absolute', '灰条是绝对定位覆盖层，不占布局空间');
+
+  click(w, bar);
+  ok(w.getComputedStyle(text).visibility === 'visible', '揭开后释义可见');
+  ok(w.getComputedStyle(bar).display === 'none', '揭开后灰条让位');
+  ok(w.document.querySelector('#wordBoard .word-card') === card, '揭开不重建卡片节点');
+  ok(w.document.querySelector('#wordBoard .word-item') === row, '揭开不重建词行节点');
+});
+
+test('单词M 释义短 / 长判定：纯函数 + 实测后只切 .w-short', (w) => {
+  const app = w.__app;
+  ok(app.isMeaningMultiline(19, 18.85) === false, '单行高 → 判为短');
+  ok(app.isMeaningMultiline(38, 18.85) === true, '两行高 → 判为长');
+  ok(app.isMeaningMultiline(19, 0) === true, '读不到行高 → 保守按长');
+  ok(app.isMeaningMultiline(0, 18.85) === true, '量不到高度 → 保守按长');
+  ok(app.isMeaningMultiline(0, 0) === true, '都量不到 → 保守按长');
+
+  app.Store.reset();
+  app.Store.addWordCard({ words: [
+    { text: 'affect', meaning: 'v. 影响' },
+    { text: 'abandon', meaning: 'v. 放弃，抛弃；遗弃，离弃；中止，停止' },
+  ] });
+  app.renderWords();
+  const rows = w.document.querySelectorAll('#wordBoard .word-item');
+  ok(rows.length === 2, '两个词各占一行');
+
+  // jsdom 不实现布局，getBoundingClientRect 恒为 0：这里打桩出「单行 / 两行」两种实测结果
+  rows[0].querySelector('.word-meaning-text').getBoundingClientRect = () => ({ height: 19 });
+  rows[1].querySelector('.word-meaning-text').getBoundingClientRect = () => ({ height: 38 });
+  const realCss = w.getComputedStyle;
+  w.getComputedStyle = function (el) {
+    if (el && el.classList && el.classList.contains('word-meaning-text')) return { lineHeight: '18.85px' };
+    return realCss.call(w, el);
+  };
+  app.markWordMeaningLines(w.document.getElementById('wordBoard'));
+
+  ok(rows[0].classList.contains('w-short'), '单行释义加 .w-short（小灰条）');
+  ok(!rows[1].classList.contains('w-short'), '两行释义不加 .w-short（等大灰块）');
+  w.getComputedStyle = realCss;
+});
+
+test('单词M 重算短 / 长不重建 DOM，已揭开状态不被重置', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响' }] });
+  app.renderWords();
+  const card = w.document.querySelector('#wordBoard .word-card');
+  const row = w.document.querySelector('#wordBoard .word-item');
+  click(w, row.querySelector('.word-meaning-bar'));
+  ok(row.classList.contains('on'), '已揭开');
+
+  app.markWordMeaningLines(w.document.getElementById('wordBoard'));
+  ok(w.document.querySelector('#wordBoard .word-card') === card, '重算不重建卡片节点');
+  ok(w.document.querySelector('#wordBoard .word-item') === row, '重算不重建词行节点');
+  ok(row.classList.contains('on'), '重算后仍保持揭开状态');
+
+  let threw = false;
+  try { w.dispatchEvent(new w.Event('resize')); } catch (e) { threw = true; }
+  ok(!threw, '窗口 resize 触发的重算不会抛错');
+});
+
+test('单词N 紧排：卡片跨行 = 高度 + 间距，量不到高度时退回普通网格', (w) => {
+  const app = w.__app;
+  const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
+  const packed = css.match(/\.word-board\.packed\s*\{[^}]*\}/);
+  ok(!!packed, '存在 .packed 紧排规则');
+  ok(!!packed && /grid-auto-rows:\s*1px/.test(packed[0]), '紧排把行高压到 1px');
+  ok(!!packed && /row-gap:\s*0/.test(packed[0]), '紧排去掉行间距（间距改由跨行数承担）');
+  const base = css.match(/\.word-board\s*\{[^}]*\}/);
+  ok(!!base && /column-gap:\s*var\(--sp-3\)|gap:\s*var\(--sp-3\)/.test(base[0]), '基础网格仍保留既有间距 token');
+  ok(app.WORD_CARD_GAP > 0, '卡片间距常量存在（与 --sp-3 一致）');
+
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'a', meaning: '甲' }] });
+  app.Store.addWordCard({ words: [{ text: 'b', meaning: '乙' }] });
+  app.renderWords();
+  const board = w.document.getElementById('wordBoard');
+  const cards = board.querySelectorAll('.word-card');
+  ok(cards.length === 2, '两张卡片');
+  ok(!board.classList.contains('packed'), 'jsdom 量不到高度 → 不启用紧排（宁可留空隙，也绝不叠卡）');
+  ok(cards[0].style.gridRowEnd === '', '不启用紧排时不留内联跨行');
+
+  // 打桩出真实高度后，跨行数应为 ceil(高度) + 间距（小数向上取整，保证间距不小于 GAP）
+  cards[0].getBoundingClientRect = () => ({ height: 100.4 });
+  cards[1].getBoundingClientRect = () => ({ height: 55 });
+  app.layoutWordCardSpans(board);
+  ok(board.classList.contains('packed'), '量到高度 → 启用紧排');
+  ok(cards[0].style.gridRowEnd === 'span ' + (101 + app.WORD_CARD_GAP), '跨行数 = ceil(高度) + 间距');
+  ok(cards[1].style.gridRowEnd === 'span ' + (55 + app.WORD_CARD_GAP), '第二张同理');
+
+  // 又量不到（页面隐藏）→ 必须清掉内联跨行，否则残留的 span 会在普通网格里乱跨行
+  cards[0].getBoundingClientRect = () => ({ height: 0 });
+  app.layoutWordCardSpans(board);
+  ok(!board.classList.contains('packed'), '又量不到 → 摘掉紧排');
+  ok(cards[0].style.gridRowEnd === '' && cards[1].style.gridRowEnd === '', '并清掉内联跨行');
+});
+
+test('单词N 紧排不改卡片高度，揭开释义后跨行数也不变', (w) => {
+  const app = w.__app;
+  app.Store.reset();
+  app.Store.addWordCard({ words: [{ text: 'affect', meaning: 'v. 影响，感动，假装，做作，装模作样' }] });
+  app.renderWords();
+  const board = w.document.getElementById('wordBoard');
+  const card = board.querySelector('.word-card');
+  card.getBoundingClientRect = () => ({ height: 120 });
+  app.layoutWordCardSpans(board);
+  const span = card.style.gridRowEnd;
+  ok(span === 'span ' + (120 + app.WORD_CARD_GAP), '跨行数按卡片高度算好');
+  click(w, card.querySelector('.word-meaning-bar'));
+  ok(board.querySelector('.word-card') === card, '揭开不重建卡片节点');
+  ok(card.style.gridRowEnd === span, '揭开后跨行数不变（卡片高度不受可见性切换影响）');
 });
 
 /* =========================================================================

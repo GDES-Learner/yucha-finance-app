@@ -2128,7 +2128,7 @@ function wordItemHtml(w) {
     + `</span></li>`;
 }
 
-/** 一张单词卡片的 HTML（高度随词数自然变化，由 .word-board 瀑布流排列） */
+/** 一张单词卡片的 HTML（高度随词数自然变化，由 .word-board 固定网格排列） */
 function wordCardHtml(card) {
   const words = Array.isArray(card.words) ? card.words : [];
   const id = escapeHtml(card.id);
@@ -2170,6 +2170,90 @@ function renderEmptyWords() {
     </div>`;
 }
 
+/* --- 释义「短条 / 长块」判定 -------------------------------------------------
+   短释义沿用统一 58×15 小灰条（不泄露长短）；需要两行的长释义用「等大的灰块」。
+   两类外观都只作用在绝对定位的覆盖层上，所以判定本身**不参与布局**：
+   判错、判晚都只会是观感差异，绝不产生位移。
+   （宽度变化会让折行数改变，故 resize / 字体就绪后重算。） */
+
+/**
+ * 纯函数：释义盒高 h 与单行行高 line 相比，是否需要占两行以上。
+ * 量不到尺寸（如 jsdom 无布局、页面隐藏）时保守判为「长」——宁可盖满，也不露馅。
+ */
+function isMeaningMultiline(h, line) {
+  if (!(h > 0) || !(line > 0)) return true;
+  return h > line * 1.5;
+}
+
+/**
+ * 扫描容器内的词行，按实测行数给 .word-item 加 / 去 .w-short。
+ * 只切 class、不重建 DOM，因此不会重置用户已经揭开的 .on 状态。
+ * 无释义的行（没有 .word-meaning-text）直接跳过。
+ */
+function markWordMeaningLines(root) {
+  const scope = root || document;
+  const items = scope.querySelectorAll('.word-item');
+  for (let i = 0; i < items.length; i++) {
+    const li = items[i];
+    const text = li.querySelector('.word-meaning-text');
+    if (!text) continue;
+    const h = text.getBoundingClientRect ? text.getBoundingClientRect().height : 0;
+    const cs = window.getComputedStyle ? window.getComputedStyle(text) : null;
+    const line = cs ? parseFloat(cs.lineHeight) : 0;
+    li.classList.toggle('w-short', !isMeaningMultiline(h, line));
+  }
+}
+
+/** 卡片之间（含上下）的间距，与 style.css 里 .word-board 的 --sp-3 保持一致 */
+const WORD_CARD_GAP = 12;
+
+/**
+ * 紧排布局：量出每张卡片的高度，让它跨 ceil(高度 + 间距) 行（配合 .packed 的
+ * 1px 行高、0 行间距）。这样同一列里卡片上下的间距恒为 WORD_CARD_GAP，
+ * 矮卡下方不会再被同行的高卡撑出空洞。
+ * 卡片自身高度与跨行数无关（align-items: start），所以量之前不必先摘 .packed。
+ * 量不到高度时（页面隐藏 / 无布局）清掉内联跨行并摘掉 .packed，退回普通网格 ——
+ * 宁可留空隙，也绝不让卡片叠在一起。
+ */
+function layoutWordCardSpans(root) {
+  const el = root || $('#wordBoard');
+  if (!el) return;
+  const cards = el.querySelectorAll('.word-card');
+  if (!cards.length) { el.classList.remove('packed'); return; }
+
+  const spans = [];
+  for (let i = 0; i < cards.length; i++) {
+    const h = cards[i].getBoundingClientRect().height;
+    if (!(h > 0)) break;
+    spans.push(Math.ceil(h) + WORD_CARD_GAP);
+  }
+  if (spans.length !== cards.length) {
+    for (let i = 0; i < cards.length; i++) cards[i].style.gridRowEnd = '';
+    el.classList.remove('packed');
+    return;
+  }
+  for (let i = 0; i < cards.length; i++) {
+    cards[i].style.gridRowEnd = 'span ' + spans[i];
+  }
+  el.classList.add('packed');
+}
+
+/** 在本页实测一次；页面隐藏时元素量不到尺寸，直接跳过 */
+function measureWordLines() {
+  const page = document.getElementById('page-words');
+  if (!page || !page.classList.contains('active')) return;
+  const board = document.getElementById('wordBoard') || page;
+  markWordMeaningLines(board);
+  layoutWordCardSpans(board);
+}
+
+let wordLineTimer = null;
+/** 窗口尺寸变化会改变折行，去抖后统一重算 */
+function scheduleWordLineRecalc() {
+  if (wordLineTimer) clearTimeout(wordLineTimer);
+  wordLineTimer = setTimeout(measureWordLines, 120);
+}
+
 /** 英语单词页总渲染入口 */
 function renderWords() {
   const board = $('#wordBoard');
@@ -2177,6 +2261,8 @@ function renderWords() {
   const all = sortWordCards(Store.getWordCards());
   board.innerHTML = all.length ? all.map(wordCardHtml).join('') : renderEmptyWords();
   refreshIcons(board);
+  markWordMeaningLines(board);
+  layoutWordCardSpans(board);
 }
 
 /** 新增卡片 */
@@ -2294,6 +2380,14 @@ function initWordsPage() {
     e.preventDefault();
     toggleWordMeaning(box.closest('.word-item'));
   });
+
+  // 卡片宽度随窗口变化 → 释义折行数可能变，去抖后重算「短条 / 长块」
+  // （只切 class，不动 DOM、不动已揭开状态）
+  window.addEventListener('resize', scheduleWordLineRecalc);
+  // 字体加载完成后折行才最终确定，再量一次
+  if (document.fonts && document.fonts.ready && document.fonts.ready.then) {
+    try { document.fonts.ready.then(measureWordLines).catch(function () {}); } catch (e) { /* 忽略 */ }
+  }
 }
 
 /* =========================================================================

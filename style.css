@@ -1722,16 +1722,30 @@ select.f-category.fallback-native {
 /* =========================================================================
    27. 英语单词页
    ========================================================================= */
-/* 卡片板：瀑布流。用多列布局让高低不一的卡片自然错落、互不留空洞。
-   注意：多列布局「先填满一列再填下一列」，因此卡片顺序是纵向流动的。 */
+/* 卡片板：固定网格。卡片位置恒定、永不换列，新增卡片只往后排（行优先）。
+   不用多列瀑布流：多列布局会按内容高度做「列平衡」，一旦某张卡因解开长释义
+   而变高，别的卡片就会被重新分配到其它列 —— 那正是「位置乱动」的来源。 */
 .word-board {
-  columns: 240px;
-  column-gap: var(--sp-3);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--sp-3);
+  align-items: start;                  /* 矮卡不拉伸，行高按该行最高卡对齐 */
+}
+
+/* 紧排模式（由 JS 量出每张卡片高度后加上 .packed）：
+   行高压到 1px 且去掉行间距，卡片再按 grid-row-end: span N 跨 N 行，
+   N = 卡片高度 + 卡片间距 —— 于是同一列里上下的间距恒为 --sp-3，
+   **矮卡下方不再被同行高卡撑出空洞**（普通网格按行对齐时的通病）。
+   卡片自身高度不受跨行数影响（align-items: start），所以揭开释义仍零位移。
+   JS 量不到高度时（页面隐藏 / 无布局）会摘掉 .packed 退回普通网格，不会叠卡。 */
+.word-board.packed {
+  grid-auto-rows: 1px;
+  row-gap: 0;
 }
 
 /* 单词卡片：内容层，实体白卡（与金库卡 / 海报卡同规格） */
 .word-card {
-  break-inside: avoid;                 /* 卡片不被拆到两列 */
+  break-inside: avoid;                 /* 打印时不被拆到两页 */
   -webkit-column-break-inside: avoid;
   page-break-inside: avoid;
   background: var(--surface);
@@ -1739,7 +1753,7 @@ select.f-category.fallback-native {
   border-radius: var(--r-md);
   box-shadow: var(--shadow-xs);
   padding: var(--sp-3) var(--sp-4) var(--sp-2);
-  margin: 0 0 var(--sp-3);
+  margin: 0;                           /* 行距交给网格 gap，避免叠加 */
   transition: box-shadow var(--dur-base) var(--ease-out),
               transform var(--dur-base) var(--ease-out),
               border-color var(--dur-base) var(--ease-out);
@@ -1778,35 +1792,45 @@ select.f-category.fallback-native {
   letter-spacing: .1px; word-break: break-word;
 }
 
-/* 释义遮挡：固定宽度灰条默认盖住释义；点一下灰条消失、释义显现，再点释义可遮回。
-   flex: 0 1 auto + min-width: 0 让过长释义在卡片内换行（必要时自动落到下一行），
-   而不是把卡片撑破。释义太长时整块换行到下一行，不挤压单词。 */
+/* 释义遮挡（零位移）：
+   释义文字「始终留在布局里占位」，默认只是 visibility: hidden 不可见；灰条则改成
+   绝对定位的覆盖层。于是「遮住 ⇄ 揭开」只切换可见性，任何盒子尺寸都不变 ——
+   卡片自身与相邻卡片一个像素都不会动。
+   短释义（只占一行）由 JS 加 .w-short，灰条退化成既有的 58×15 小灰条；
+   CSS 默认按「长」渲染（盖满释义盒），所以 JS 未跑或测量失败也不会露馅。
+   注意：.w-short 只切绝对定位灰条的尺寸、不参与布局，判定错了也只是观感差异。 */
 .word-meaning {
-  flex: 0 1 auto; min-width: 0;
+  position: relative;                  /* 灰条覆盖层的定位上下文 */
+  flex: 0 1 auto;
+  min-width: 58px;                     /* 保证小灰条完整落在释义盒内 */
   display: inline-flex; align-items: center;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   outline: none;
 }
 .word-meaning-bar {
-  flex: 0 0 auto;
-  width: 58px; height: 15px;
-  border-radius: 5px;
+  position: absolute; inset: 0;         /* 默认长态：盖满整个释义盒 */
+  border-radius: 6px;
   background: var(--ink-200);
   transition: background var(--dur-fast) var(--ease-out);
+}
+.word-item.w-short .word-meaning-bar {  /* 短释义：退化成 58×15 小灰条 */
+  inset: auto; left: 0; top: 50%; transform: translateY(-50%);
+  width: 58px; height: 15px;
+  border-radius: 5px;
 }
 .word-meaning:hover .word-meaning-bar { background: var(--ink-300); }
 .word-meaning:focus-visible .word-meaning-bar { box-shadow: 0 0 0 2px var(--brand-300); }
 .word-meaning-text {
-  display: none;
+  visibility: hidden;                   /* 占位但不可见 → 行高恒定，揭开不改尺寸 */
   font-size: var(--fs-sm); font-weight: 450; color: var(--ink-500);
   line-height: 1.45; word-break: break-word;
 }
-/* 揭开后：灰条让位，释义显现；同一行内两个块互斥显示 */
+/* 揭开后：灰条让位、释义显现；文字本身从未改变过尺寸 */
 .word-item.on .word-meaning-bar { display: none; }
-.word-item.on .word-meaning-text { display: inline; }
+.word-item.on .word-meaning-text { visibility: visible; }
 
 /* 窄屏：单列，避免单词被挤断 */
 @media (max-width: 560px) {
-  .word-board { columns: 1; }
+  .word-board { grid-template-columns: 1fr; }
 }
