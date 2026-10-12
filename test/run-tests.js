@@ -45,7 +45,8 @@ function boot() {
   const instrumented =
     '(function(){\n' + appJs + '\n' + tvmazeJs + '\n' + cloudJs + '\n' +
     'window.__app = { Store, state, CATEGORIES, CATEGORY_ICON, CATEGORY_COLOR, ACCOUNTS, ' +
-    'normalizeCategory, renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr, ' +
+    'normalizeCategory, MEALS, MEAL_PARENT, normalizeMeal, mealForCategory, ' +
+    'renderLedger, renderStats, renderVault, switchPage, todayStr, monthStr, ' +
     'renderMonthlySummary, monthTotals, monthCategoryTotals, addMonths, ' +
     'applyAppName, openRenameModal, DEFAULT_APP_NAME, DATA_VERSION, ' +
     'SHOW_STATUSES, SHOW_STATUS_META, SHOW_SORTS, SHOW_COVER_TYPES, ' +
@@ -179,6 +180,204 @@ test('需求3 分类拆分为 吃饭/奶茶/宵夜 + 宿舍', (w) => {
 
   // 历史「餐饮」数据归一化到「吃饭」
   ok(w.__app.normalizeCategory('餐饮') === '吃饭', '旧「餐饮」自动映射为「吃饭」');
+});
+
+/* ---------- 需求 3b：吃饭的餐次子选择（早餐/午饭/晚饭） ---------- */
+
+/** 取记账页表单与餐次容器（多处复用） */
+function mealDom(w) {
+  const form = w.document.querySelector('#page-ledger form.entry-form');
+  return { form, mp: form.querySelector('[data-meal-picker]'), mealInput: form.querySelector('.f-meal') };
+}
+/** 点某个主分类 */
+function pickCat(w, name) {
+  const btn = w.document.querySelector(`#page-ledger .cat-opt[data-cat="${name}"]`);
+  click(w, btn);
+  return btn;
+}
+/** 点某个餐次 */
+function pickMeal(w, name) {
+  const btn = w.document.querySelector(`#page-ledger .meal-opt[data-meal="${name}"]`);
+  click(w, btn);
+  return btn;
+}
+
+test('需求3b 餐次初始折叠（点「吃饭」才展开）', (w) => {
+  const { mp } = mealDom(w);
+  ok(!!mp, '餐次容器存在');
+  ok(mp.style.display === 'none', '初始收起（即使「吃饭」默认选中）');
+  const btns = Array.from(mp.querySelectorAll('.meal-opt'));
+  ok(btns.length === 3, `三个餐次按钮（当前 ${btns.length}）`);
+  ok(btns.map((b) => b.dataset.meal).join(',') === '早餐,午饭,晚饭', '顺序为 早餐/午饭/晚饭');
+  ok(btns.every((b) => b.querySelector('.cat-opt-name').textContent === b.dataset.meal), '按钮文字与取值一致');
+  ok(btns.every((b) => !b.classList.contains('selected')), '初始均未选中（可不选）');
+  // 容器必须是网格的兄弟节点，不能嵌进 [data-cat-picker]，否则主循环会误选到餐次按钮
+  ok(!w.document.querySelector('[data-cat-picker] [data-meal-picker]'), '餐次容器未嵌进分类网格内部');
+});
+
+test('需求3b 点「吃饭」展开、点其它分类收起并清空', (w) => {
+  const { mp, mealInput } = mealDom(w);
+  pickCat(w, '吃饭');
+  ok(mp.style.display !== 'none', '点「吃饭」后展开');
+  pickMeal(w, '午饭');
+  ok(mealInput.value === '午饭', '已写入餐次');
+  pickCat(w, '奶茶');
+  ok(mp.style.display === 'none', '切到「奶茶」后收起');
+  ok(mealInput.value === '', '收起时清空已选餐次');
+  ok(Array.from(mp.querySelectorAll('.meal-opt')).every((b) => !b.classList.contains('selected')), '收起时取消高亮');
+  pickCat(w, '吃饭');
+  ok(mp.style.display !== 'none', '再点「吃饭」又能展开');
+  pickCat(w, '吃饭');   // 复原默认态
+});
+
+test('需求3b 选餐次不污染分类值（隐藏 select 恒为「吃饭」）', (w) => {
+  const { form, mealInput } = mealDom(w);
+  pickCat(w, '吃饭');
+  pickMeal(w, '午饭');
+  ok(mealInput.value === '午饭', '餐次写入 .f-meal');
+  ok(form.querySelector('.f-category').value === '吃饭', '隐藏 select 仍为「吃饭」');
+  const lunch = w.document.querySelector('#page-ledger .meal-opt[data-meal="午饭"]');
+  ok(lunch.classList.contains('selected'), '「午饭」进入选中态');
+  ok(lunch.getAttribute('aria-pressed') === 'true', 'aria-pressed=true');
+  pickMeal(w, '早餐');
+  ok(!w.document.querySelector('#page-ledger .meal-opt[data-meal="午饭"]').classList.contains('selected'),
+    '改点「早餐」后「午饭」取消选中');
+  ok(w.document.querySelector('#page-ledger .meal-opt[data-meal="早餐"]').classList.contains('selected'), '「早餐」被选中');
+  ok(mealInput.value === '早餐', '餐次值随之更新');
+  pickMeal(w, '早餐');   // 再次点已选 = 取消
+  ok(mealInput.value === '', '再次点同一餐次即取消（可不选）');
+});
+
+test('需求3b 提交写入 meal，category 仍为吃饭', (w) => {
+  const { Store, todayStr } = w.__app;
+  const { form } = mealDom(w);
+  Store.data.transactions = [];
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
+  pickCat(w, '吃饭');
+  pickMeal(w, '午饭');
+  form.querySelector('.f-amount').value = '18';
+  submit(w, form);
+  const txs = Store.data.transactions;
+  ok(txs.length === 1, '记入一笔');
+  ok(txs[0].category === '吃饭', 'category 仍为「吃饭」');
+  ok(txs[0].meal === '午饭', 'meal 写入「午饭」');
+  ok(txs[0].date === todayStr(), '日期正常');
+});
+
+test('需求3b 不选餐次也能提交（meal 为空串）', (w) => {
+  const { Store } = w.__app;
+  const { form } = mealDom(w);
+  Store.data.transactions = [];
+  pickCat(w, '吃饭');
+  form.querySelector('.f-amount').value = '9';
+  submit(w, form);
+  ok(Store.data.transactions.length === 1, '照常记入一笔');
+  ok(Store.data.transactions[0].category === '吃饭', 'category 为「吃饭」');
+  ok(Store.data.transactions[0].meal === '', 'meal 为空串');
+});
+
+test('需求3b 切到其它分类后提交，meal 为空', (w) => {
+  const { Store } = w.__app;
+  const { form } = mealDom(w);
+  Store.data.transactions = [];
+  pickCat(w, '吃饭');
+  pickMeal(w, '晚饭');
+  pickCat(w, '奶茶');
+  form.querySelector('.f-amount').value = '13';
+  submit(w, form);
+  const t = Store.data.transactions[0];
+  ok(t.category === '奶茶', 'category 为「奶茶」');
+  ok(t.meal === '', '非「吃饭」时 meal 归空');
+  pickCat(w, '吃饭');
+});
+
+test('需求3b 提交后餐次归零但分类保留', (w) => {
+  const { Store } = w.__app;
+  const { form, mealInput, mp } = mealDom(w);
+  Store.data.transactions = [];
+  pickCat(w, '吃饭');
+  pickMeal(w, '午饭');
+  form.querySelector('.f-amount').value = '20';
+  submit(w, form);
+  ok(mealInput.value === '', '提交后餐次清空（每笔重新选）');
+  ok(Array.from(mp.querySelectorAll('.meal-opt')).every((b) => !b.classList.contains('selected')), '提交后无餐次高亮');
+  ok(form.querySelector('.f-category').value === '吃饭', '分类按既有行为保留「吃饭」');
+});
+
+test('需求3b 账单标题显示「吃饭 · 午饭」，收入与统计页不拼', (w) => {
+  const { Store, todayStr } = w.__app;
+  const ds = todayStr();
+  Store.data.transactions = [];
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
+  Store.addTransaction({ id: 'm1', type: 'expense', amount: 18, category: '吃饭', meal: '午饭', account: 'wechat', remark: '', date: ds, createdAt: 1 });
+  Store.addTransaction({ id: 'm2', type: 'expense', amount: 7, category: '吃饭', account: 'wechat', remark: '', date: ds, createdAt: 2 }); // 旧记录无 meal
+  Store.addTransaction({ id: 'm3', type: 'income', amount: 100, category: '', meal: '', account: 'bank', remark: '', date: ds, createdAt: 3 });
+
+  // 记账页账单：应显示「吃饭 · 午饭」，无餐次的旧记录仍显示「吃饭」
+  w.__app.switchPage('ledger');
+  w.__app.renderLedger();
+  const ledgerHtml = w.document.querySelector('#billList').innerHTML;
+  ok(ledgerHtml.includes('吃饭 · 午饭'), '记账页显示「吃饭 · 午饭」');
+  ok(ledgerHtml.includes('>吃饭<'), '无餐次的旧记录仍显示「吃饭」（不逐字节改变）');
+  ok(!ledgerHtml.includes('收入 ·'), '收入行不拼餐次');
+  ok(ledgerHtml.includes('>收入<'), '收入行标题为「收入」');
+
+  // 统计页当日账单：保持原样，不出现分隔符
+  w.__app.switchPage('stats');
+  w.document.querySelector('#statsDate').value = ds;
+  w.__app.renderStats();
+  const statsHtml = w.document.querySelector('#statsBillList').innerHTML;
+  ok(!statsHtml.includes('·'), '统计页当日账单不含餐次分隔符');
+  ok(statsHtml.includes('>吃饭<'), '统计页当日账单仍显示「吃饭」');
+});
+
+test('需求3b sanitize 归一非法 meal', (w) => {
+  const { Store } = w.__app;
+  const ds = w.__app.todayStr();
+  Store.data.transactions = [
+    { id: 'a', type: 'expense', amount: 1, category: '吃饭', meal: 'brunch', account: 'wechat', remark: '', date: ds },
+    { id: 'b', type: 'expense', amount: 2, category: '奶茶', meal: '午饭', account: 'wechat', remark: '', date: ds },
+    { id: 'c', type: 'expense', amount: 3, category: '吃饭', meal: '晚饭', account: 'wechat', remark: '', date: ds },
+    { id: 'd', type: 'income', amount: 4, category: '', meal: '午饭', account: 'bank', remark: '', date: ds },
+    { id: 'e', type: 'expense', amount: 5, category: '吃饭', account: 'wechat', remark: '', date: ds },
+  ];
+  Store.sanitize();
+  const byId = {};
+  Store.data.transactions.forEach((t) => { byId[t.id] = t; });
+  ok(byId.a.meal === '', '非法餐次「brunch」→ 空串');
+  ok(byId.b.meal === '', '非「吃饭」分类的餐次 → 空串');
+  ok(byId.c.meal === '晚饭', '合法餐次原样保留');
+  ok(byId.d.meal === '', '收入记录餐次 → 空串');
+  ok(byId.e.meal === '', '缺失 meal 补为空串');
+});
+
+test('需求3b 回归：餐次不改变分类统计', (w) => {
+  const { Store } = w.__app;
+  const ds = w.__app.todayStr();
+  const ym = w.__app.monthStr();
+  Store.data.transactions = [];
+  Store.data.vault = { wechat_change: 0, wechat_lct: 0, alipay: 0, bank: 0 };
+  // 两笔「吃饭」分别选了不同餐次，统计上必须仍并成一条「吃饭」
+  Store.addTransaction({ id: 'r1', type: 'expense', amount: 20, category: '吃饭', meal: '早餐', account: 'wechat', remark: '', date: ds, createdAt: 1 });
+  Store.addTransaction({ id: 'r2', type: 'expense', amount: 30, category: '吃饭', meal: '晚饭', account: 'wechat', remark: '', date: ds, createdAt: 2 });
+  Store.addTransaction({ id: 'r3', type: 'expense', amount: 15, category: '奶茶', meal: '', account: 'wechat', remark: '', date: ds, createdAt: 3 });
+
+  w.__app.switchPage('stats');
+  w.document.querySelector('#statsDate').value = ds;
+  w.__app.renderStats();
+  const legend = w.document.querySelector('#statsLegend').innerHTML;
+  ok((legend.match(/吃饭/g) || []).length === 1, '图例里「吃饭」只出现 1 次（未被餐次拆开）');
+  ok(legend.includes('奶茶'), '图例含「奶茶」');
+  ok(w.document.querySelector('#statsTotal').textContent === '¥65.00', '当日总支出 = 65.00');
+  const segs = w.document.querySelectorAll('#donutSvg .donut-seg').length;
+  ok(segs === 2, `环形图仍只有 2 个分类扇区（当前 ${segs}）`);
+
+  const mc = w.__app.monthCategoryTotals(ym);
+  const keys = Object.keys(mc.byCat).sort();
+  ok(keys.length === 2 && keys.indexOf('吃饭') > -1 && keys.indexOf('奶茶') > -1,
+    `byCat 只有「吃饭」「奶茶」两个键（当前 ${keys.join(',')}）`);
+  ok(mc.byCat['吃饭'] === 50, '「吃饭」= 两笔之和 50（早+晚已合并）');
+  ok(!('早餐' in mc.byCat) && !('晚饭' in mc.byCat), 'byCat 里没有餐次键');
 });
 
 /* ---------- 需求 4：账户顺序 ---------- */

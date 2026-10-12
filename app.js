@@ -54,6 +54,23 @@ function normalizeCategory(cat) {
   return CATEGORY_ALIAS[cat] || cat;
 }
 
+/* --- 吃饭的子分类（餐次） ---
+   仅当 category === '吃饭' 时有效；可不选（'' 表示没选，照常提交）。
+   注意：这只影响记录本身与账单文案，统计仍按 category('吃饭') 聚合，输出不变。 */
+const MEAL_PARENT = '吃饭';
+const MEALS = ['早餐', '午饭', '晚饭'];
+/* 餐次图标：早/午/晚 = 日出 / 日中 / 日落（刻意避开「宵夜」已用的 moon） */
+const MEAL_ICON = { 早餐: 'sunrise', 午饭: 'sun', 晚饭: 'sunset' };
+
+/** 非法 / 缺省餐次一律归一为空串 */
+function normalizeMeal(meal) {
+  return MEALS.indexOf(meal) > -1 ? meal : '';
+}
+/** 只有父分类是「吃饭」才保留餐次，其它分类恒为 '' */
+function mealForCategory(category, meal) {
+  return category === MEAL_PARENT ? normalizeMeal(meal) : '';
+}
+
 /* 该笔支出是否计入当月环形图（未设置的历史记录默认计入） */
 function isCounted(tx) {
   return !(tx && tx.counted === false);
@@ -378,6 +395,7 @@ const Store = {
       t.amount = round2(amt);
       t.account = ACCOUNTS.hasOwnProperty(t.account) ? t.account : DEFAULT_ACCOUNT;
       t.category = t.type === 'expense' ? normalizeCategory(t.category || '其它') : '';
+      t.meal = t.type === 'expense' ? mealForCategory(t.category, t.meal) : '';
       t.counted = t.counted !== false;   // 默认计入环形图
       t.remark = typeof t.remark === 'string' ? t.remark : '';
       t.createdAt = Number(t.createdAt) || Date.parse(t.date) || Date.now();
@@ -2049,7 +2067,7 @@ function renderGaugeDaily(month, remain, isCurrent) {
     : `已超额 ${money(Math.abs(remain))}，本月已无额度可分配`;
 }
 
-/* --- 分类选择器（图标网格 + 隐藏原生 select 同步） --- */
+/* --- 分类选择器（图标网格 + 隐藏原生 select 同步）+ 吃饭餐次子选择 --- */
 function buildCatPicker(form) {
   const picker = form.querySelector('[data-cat-picker]');
   const native = form.querySelector('select.f-category');
@@ -2066,16 +2084,71 @@ function buildCatPicker(form) {
 
   native.value = CATEGORIES[0];
 
-  picker.querySelectorAll('.cat-opt').forEach((btn) => {
+  /* ---- 餐次子选择器：是 [data-cat-picker] 的兄弟节点（刻意不放进网格内部，
+     否则主循环 querySelectorAll 会把餐次按钮当成分类按钮）。
+     复用 .cat-picker / .cat-opt / .cat-chip 类，因此零新增 CSS。 ---- */
+  let mealPicker = form.querySelector('[data-meal-picker]');
+  if (!mealPicker) {
+    picker.insertAdjacentHTML('afterend', `
+      <div class="cat-picker" data-meal-picker style="display:none;margin-top:var(--sp-2)">
+        ${MEALS.map((m) => `
+          <button type="button" class="cat-opt meal-opt" data-meal="${m}" aria-pressed="false">
+            <span class="cat-chip" style="--chip-bg:${CATEGORY_TINT[MEAL_PARENT]};--chip-fg:${CATEGORY_COLOR[MEAL_PARENT]}">${icon(MEAL_ICON[m])}</span>
+            <span class="cat-opt-name">${m}</span>
+          </button>`).join('')}
+        <input type="hidden" class="f-meal" value="" />
+      </div>`);
+    mealPicker = form.querySelector('[data-meal-picker]');
+  }
+  const mealInput = mealPicker.querySelector('.f-meal');
+  const mealBtns = Array.prototype.slice.call(mealPicker.querySelectorAll('.meal-opt'));
+  /** 是否已点开「吃饭」（初始折叠：即使「吃饭」默认选中也不展开） */
+  let mealOpen = false;
+
+  const clearMeal = () => {
+    mealInput.value = '';
+    mealBtns.forEach((b) => {
+      b.classList.remove('selected');
+      b.setAttribute('aria-pressed', 'false');
+    });
+  };
+
+  /** 按「是否点开 + 当前分类是否为吃饭」同步显隐；收起时一并清空餐次 */
+  const syncMealPicker = () => {
+    const show = mealOpen && native.value === MEAL_PARENT;
+    // 必须用 style.display：.cat-picker 的 display:grid 会盖过 [hidden] 的 UA 样式
+    mealPicker.style.display = show ? '' : 'none';
+    if (!show) clearMeal();
+  };
+
+  // 主分类：互斥高亮 + 同步隐藏 select；只有点「吃饭」才展开餐次
+  picker.querySelectorAll('.cat-opt[data-cat]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      picker.querySelectorAll('.cat-opt').forEach((b) => {
+      picker.querySelectorAll('.cat-opt[data-cat]').forEach((b) => {
         const on = b === btn;
         b.classList.toggle('selected', on);
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
       native.value = btn.dataset.cat;          // 同步给隐藏 select（表单提交读取）
+      mealOpen = btn.dataset.cat === MEAL_PARENT;
+      syncMealPicker();
     });
   });
+
+  // 餐次：单选，再次点已选 = 取消（可不选）
+  mealBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const on = !btn.classList.contains('selected');
+      mealBtns.forEach((b) => {
+        const sel = b === btn && on;
+        b.classList.toggle('selected', sel);
+        b.setAttribute('aria-pressed', sel ? 'true' : 'false');
+      });
+      mealInput.value = on ? btn.dataset.meal : '';
+    });
+  });
+
+  syncMealPicker();   // 初始折叠
 }
 
 /* --- 账户选择（分段控件，带图标） --- */
@@ -2145,12 +2218,16 @@ function initEntryForms() {
       const isExpense = type === 'expense';
       const account = accountOf();
       const date = form.querySelector('.f-date').value || todayStr();
+      const catVal = form.querySelector('.f-category').value;
+      const mealEl = form.querySelector('.f-meal');
 
       const tx = {
         id: uid(),
         type,
         amount: round2(amount),
-        category: isExpense ? form.querySelector('.f-category').value : '',
+        category: isExpense ? catVal : '',
+        // 餐次只在「支出 + 吃饭」时才有意义，其余一律留空
+        meal: isExpense && catVal === MEAL_PARENT && mealEl ? mealEl.value : '',
         account,
         remark: form.querySelector('.f-remark').value.trim(),
         date,
@@ -2179,10 +2256,20 @@ function initEntryForms() {
         $('#ledgerMonth').value = txMonth;
       }
 
-      // 表单重置
+      // 表单重置（分类按既有行为「粘性」保留；餐次每笔归零，需重新选）
       amountInput.value = '';
       form.querySelector('.f-remark').value = '';
       form.querySelector('.f-date').value = todayStr();
+      if (mealEl) {
+        mealEl.value = '';
+        const mp = form.querySelector('[data-meal-picker]');
+        if (mp) {
+          mp.querySelectorAll('.meal-opt').forEach((b) => {
+            b.classList.remove('selected');
+            b.setAttribute('aria-pressed', 'false');
+          });
+        }
+      }
 
       renderLedger();
       if ($('#page-stats').classList.contains('active')) renderStats();
@@ -2238,6 +2325,9 @@ function billRow(t, opts) {
   const cat = isExpense ? normalizeCategory(t.category) : '收入';
   const acc = ACCOUNTS[t.account] || { name: t.account, icon: 'wallet' };
   const counted = isCounted(t);
+  // 餐次只拼在「吃饭」支出上；统计页当日账单传 showMeal:false 保持原样
+  const meal = (isExpense && o.showMeal !== false && cat === MEAL_PARENT) ? normalizeMeal(t.meal) : '';
+  const title = meal ? `${cat} · ${meal}` : cat;
 
   const chip = isExpense
     ? catChip(cat, o.large ? 'lg' : '')
@@ -2261,7 +2351,7 @@ function billRow(t, opts) {
       <div class="bill-cat">${chip}</div>
       <div class="bill-main">
         <div class="bill-top">
-          <span class="bill-title">${escapeHtml(cat)}</span>
+          <span class="bill-title">${escapeHtml(title)}</span>
           ${isExpense && !counted ? `<span class="bill-flag">${icon('eye-off')}不计入</span>` : ''}
         </div>
         ${t.remark ? `<div class="bill-remark">${escapeHtml(t.remark)}</div>` : ''}
@@ -2510,7 +2600,8 @@ function renderStats() {
         <span class="empty-title">当天暂无账单</span>
       </li>`;
   } else {
-    ul.innerHTML = dayList.map((t) => billRow(t, {})).join('');
+    // 统计页的当日账单保持原样：不拼接餐次（餐次只在记账页 / 金库页展示）
+    ul.innerHTML = dayList.map((t) => billRow(t, { showMeal: false })).join('');
   }
   refreshIcons(ul);
 
