@@ -161,8 +161,10 @@ test('需求2 统计页只做分析，入口统一到记账页', (w) => {
 
   // 分析模块仍然完整
   ok(!!w.document.querySelector('#donutSvg'), '统计页保留分类占比环形图');
-  ok(!!w.document.querySelector('#statsRank'), '统计页保留分类支出排行');
+  ok(!statsPage.querySelector('#statsRank'), '统计页移除重复的分类支出排行');
   ok(!!w.document.querySelector('#statsTrend'), '统计页保留近 7 日收支趋势');
+  ok(!statsPage.querySelector('.stats-grid'), '统计页趋势不再受双栏网格限制');
+  ok(w.document.querySelector('#statsTrend').closest('.card'), '近 7 日趋势仍在独立卡片内');
 
   // 记账入口统一在记账页，且功能正常（跨页写库不漏）
   const ledgerForm = w.document.querySelector('#page-ledger form.entry-form');
@@ -847,6 +849,7 @@ test('需求9 月度总结：12月网格 + 明细 + 环比 + 全年对比', (w) 
   ok(!panel.hidden, '详情面板已展开');
   ok(panel.textContent.includes('¥280.00'), '4 月合计显示 ¥280.00');
   const rows = Array.from(panel.querySelectorAll('.msum-row'));
+  ok(rows.length > 0, '月度总结保留分类支出排行');
   const eatRow = rows.find((li) => li.querySelector('.rank-name').textContent.includes('吃饭'));
   ok(!!eatRow && eatRow.querySelector('.rank-amt').textContent === '¥200.00', '吃饭行 = ¥200.00');
   ok(rows.length === 3, `明细列出 3 个分类（当前 ${rows.length}）`);

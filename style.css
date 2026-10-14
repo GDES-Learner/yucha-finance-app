@@ -831,9 +831,6 @@ select.f-category.fallback-native {
 .range-btn:hover { color: var(--ink-900); }
 .range-btn.active { background: var(--surface); color: var(--brand-700); box-shadow: var(--shadow-xs); }
 
-.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
-@media (max-width: 900px) { .stats-grid { grid-template-columns: 1fr; } }
-
 /* ===================== 14. 金库页 ===================== */
 .total-card {
   position: relative; overflow: hidden;

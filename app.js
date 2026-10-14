@@ -3082,8 +3082,6 @@ function renderStats() {
   }
   refreshIcons(legend);
 
-  // 当月分类支出排行（按所选日期所在月聚合，与上方环形图同月）
-  renderStatsRank();
   // 近 7 日收支趋势
   renderStatsTrend(date);
 
@@ -3104,44 +3102,6 @@ function renderStats() {
 
   // 月度总结（12 月网格 + 明细 + 年度对比图）
   renderMonthlySummary();
-}
-
-/** 当月分类支出排行：按当前查看月份聚合 */
-function renderStatsRank() {
-  const el = $('#statsRank');
-  if (!el) return;
-  const txs = Store.getTransactions(monthOf(state.statsDate) || state.ledgerMonth)
-    .filter((t) => t.type === 'expense');
-
-  const byCat = {};
-  txs.forEach((t) => {
-    const c = normalizeCategory(t.category);
-    byCat[c] = (byCat[c] || 0) + t.amount;
-  });
-  const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 6);
-
-  if (!entries.length) {
-    el.innerHTML = `
-      <li class="empty" style="padding:var(--sp-6) 0">
-        <span class="empty-icon">${icon('list-ordered')}</span>
-        <span class="empty-title">本月还没有支出</span>
-      </li>`;
-    refreshIcons(el);
-    return;
-  }
-
-  const max = entries[0][1] || 1;
-  el.innerHTML = entries.map(([cat, amt], i) => {
-    const color = CATEGORY_COLOR[cat] || '#8798a0';
-    return `
-      <li class="rank-item">
-        <span class="rank-no">${i + 1}</span>
-        <span class="rank-name">${icon(CATEGORY_ICON[cat] || 'package')}${escapeHtml(cat)}</span>
-        <span class="rank-track"><i style="width:${((amt / max) * 100).toFixed(1)}%;background:${color}"></i></span>
-        <span class="rank-amt">${money(amt)}</span>
-      </li>`;
-  }).join('');
-  refreshIcons(el);
 }
 
 /** 近 7 日收支趋势（以选中日期为终点） */
