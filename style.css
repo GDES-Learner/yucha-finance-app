@@ -808,12 +808,22 @@ select.f-category.fallback-native {
 /* 趋势条形图 */
 .trend {
   display: flex; align-items: flex-end; gap: 10px;
-  height: 150px; padding: var(--sp-3) 0 0;
+  height: 170px; padding: 24px 0 6px;
+  overflow-x: auto; overflow-y: hidden;
 }
-.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 7px; height: 100%; justify-content: flex-end; }
-.trend-bars { display: flex; align-items: flex-end; gap: 3px; width: 100%; justify-content: center; height: 100%; }
+.trend-col {
+  flex: 1 0 0; min-width: max(64px, calc(var(--trend-label-width, 6ch) + 28px));
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  height: 100%; justify-content: flex-end; font-size: var(--fs-micro);
+  font-family: var(--font-num); font-variant-numeric: tabular-nums;
+}
+.trend-bars { display: flex; flex: 1; min-height: 0; align-items: flex-end; gap: 3px; width: 100%; justify-content: center; }
 .trend-bar { width: 11px; border-radius: 5px 5px 3px 3px; min-height: 3px; transition: height var(--dur-slow) var(--ease-out), opacity var(--dur-fast); }
-.trend-bar.exp { background: linear-gradient(180deg, var(--brand-400), var(--brand-500)); }
+.trend-bar.exp { position: relative; background: linear-gradient(180deg, var(--brand-400), var(--brand-500)); }
+.trend-value {
+  position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+  color: var(--ink-700); font-weight: 600; line-height: 16px; white-space: nowrap;
+}
 .trend-bar.inc { background: linear-gradient(180deg, #b4e6d2, var(--brand-300)); }
 .trend-col:hover .trend-bar { opacity: .82; }
 .trend-x { font-size: var(--fs-micro); color: var(--ink-400); font-variant-numeric: tabular-nums; }

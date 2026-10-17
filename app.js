@@ -3128,6 +3128,7 @@ function renderStatsTrend(endDate) {
 
   const max = Math.max(1, ...agg.map((a) => Math.max(a.exp, a.inc)));
   const week = ['日', '一', '二', '三', '四', '五', '六'];
+  el.style.setProperty('--trend-label-width', `${Math.max(...agg.map((a) => money(a.exp).length))}ch`);
 
   el.innerHTML = agg.map((a) => {
     const d = new Date(`${a.date}T00:00:00`);
@@ -3136,7 +3137,9 @@ function renderStatsTrend(endDate) {
     return `
       <div class="trend-col" title="${a.date} 支出${money(a.exp)} 收入${money(a.inc)}">
         <div class="trend-bars">
-          <span class="trend-bar exp" style="height:${Math.max(expH, a.exp > 0 ? 4 : 2)}%"></span>
+          <span class="trend-bar exp" style="height:${Math.max(expH, a.exp > 0 ? 4 : 2)}%">
+            <span class="trend-value">${money(a.exp)}</span>
+          </span>
           <span class="trend-bar inc" style="height:${Math.max(incH, a.inc > 0 ? 4 : 2)}%"></span>
         </div>
         <span class="trend-x">${week[d.getDay()]}</span>
